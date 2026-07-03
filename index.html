@@ -864,6 +864,7 @@ const state = {
   frozenFVG: { gold: null },
   refreshTimer: null,
   calendarTimer: null,
+  calendarRetryTimer: null,
   calendarEvents: [],
   loading: false,
 };
@@ -1057,7 +1058,7 @@ function computeFibonacci(candles, lookback = 100){
   return { high, low, trend, levels };
 }
 
-function computeSupportResistance(candles, lookback = 150, leftRight = 3, tolerancePct = 0.0025){
+function computeSupportResistance(candles, price, lookback = 150, leftRight = 3, tolerancePct = 0.0025){
   const slice = candles.slice(-lookback);
   if(slice.length < leftRight * 2 + 2) return { supports: [], resistances: [] };
   const pivots = [];
@@ -1080,11 +1081,27 @@ function computeSupportResistance(candles, lookback = 150, leftRight = 3, tolera
         clusters.push({ avg: p.price, prices: [p.price], strength: 1 });
       }
     });
-    return clusters.sort((a, b) => b.strength - a.strength);
+    return clusters;
   }
+
+  // A resistance only makes sense above the current price, and a support only below it —
+  // otherwise price has already broken through it and it's no longer acting as that kind of level.
+  const rankByRelevance = (clusters) => clusters
+    .sort((a, b) => {
+      // prioritize levels with more touches, but heavily favor the ones closest to price
+      const distA = Math.abs(a.avg - price) / price;
+      const distB = Math.abs(b.avg - price) / price;
+      return (b.strength - a.strength) || (distA - distB);
+    })
+    .slice(0, 3)
+    .sort((a, b) => Math.abs(a.avg - price) - Math.abs(b.avg - price));
+
+  const allSup = cluster(pivots.filter(p => p.type === 'sup')).filter(c => c.avg < price);
+  const allRes = cluster(pivots.filter(p => p.type === 'res')).filter(c => c.avg > price);
+
   return {
-    supports: cluster(pivots.filter(p => p.type === 'sup')).slice(0, 3),
-    resistances: cluster(pivots.filter(p => p.type === 'res')).slice(0, 3),
+    supports: rankByRelevance(allSup),
+    resistances: rankByRelevance(allRes),
   };
 }
 
@@ -2297,10 +2314,11 @@ async function loadCalendar(manual = false){
     const events = await fetchEconomicCalendar();
     state.calendarEvents = events;
     renderCalendar(events);
-    $('calendarUpdated').textContent = `آخر تحديث: ${new Date().toLocaleTimeString('ar-EG', { hour:'2-digit', minute:'2-digit' })}`;
+    $('calendarUpdated').textContent = `آخر تحديث: ${new Date().toLocaleString('ar-EG', { weekday:'long', hour:'2-digit', minute:'2-digit' })}`;
     scheduleReminders(events);
     clearInterval(state.calendarTimer);
-    state.calendarTimer = setInterval(() => renderCalendar(events), 60000);
+    state.calendarTimer = setInterval(() => { renderCalendar(events); scheduleReminders(events); }, 60000);
+    clearTimeout(state.calendarRetryTimer);
     try{
       localStorage.setItem('nabd_calendarCache', JSON.stringify({
         savedAt: Date.now(),
@@ -2309,33 +2327,43 @@ async function loadCalendar(manual = false){
     }catch(e){ /* storage full/unavailable — ignore */ }
     if(manual) showToast('تم تحديث التقويم بنجاح ✅');
   }catch(e){
-    // Try to fall back to the last successfully cached data instead of a blank error
+    // Try to fall back to the last successfully cached data instead of a blank error —
+    // but only if it's recent enough to still be trustworthy as "this week's" data.
     let cached = null;
     try{
       const raw = localStorage.getItem('nabd_calendarCache');
       if(raw) cached = JSON.parse(raw);
     }catch(err){ /* ignore */ }
 
-    if(cached && cached.events && cached.events.length){
+    const cacheAgeHours = cached ? (Date.now() - cached.savedAt) / 3600000 : Infinity;
+    const cacheStillFresh = cached && cached.events && cached.events.length && cacheAgeHours < 18;
+
+    if(cacheStillFresh){
       const events = cached.events.map(e => ({ ...e, dateObj: new Date(e.date) }));
       state.calendarEvents = events;
       renderCalendar(events);
-      const savedTime = new Date(cached.savedAt).toLocaleTimeString('ar-EG', { hour:'2-digit', minute:'2-digit' });
-      $('calendarUpdated').textContent = `⚠️ تعذر التحديث الآن — تُعرض بيانات محفوظة من ${savedTime}`;
+      scheduleReminders(events); // was previously missing — reminders now fire even when using cached data
+      const savedStr = new Date(cached.savedAt).toLocaleString('ar-EG', { weekday:'long', hour:'2-digit', minute:'2-digit' });
+      $('calendarUpdated').textContent = `⚠️ تعذر التحديث الآن — تُعرض بيانات محفوظة من ${savedStr}`;
       if(manual) showToast('تعذر التحديث، تُعرض آخر بيانات محفوظة');
     } else {
+      // cached data (if any) is too old to safely label as "today" — showing it would mislead, so show a clear error instead
       $('calendarList').innerHTML = `
         <li class="news-error">
-          تعذر تحميل التقويم الاقتصادي من كل المصادر المتاحة حاليًا.
+          تعذر تحميل التقويم الاقتصادي المُحدَّث من كل المصادر المتاحة حاليًا${cached ? ' (آخر نسخة محفوظة قديمة جدًا لعرضها بأمان)' : ''}.
           <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
             <button type="button" class="cal-retry-btn">🔄 إعادة المحاولة</button>
             <a href="https://www.investing.com/economic-calendar/" target="_blank" rel="noopener" class="cal-external-link">🌐 فتح التقويم في investing.com</a>
           </div>
         </li>`;
+      $('calendarUpdated').textContent = '';
       const retryBtn = document.querySelector('.cal-retry-btn');
       if(retryBtn) retryBtn.addEventListener('click', () => loadCalendar(true));
       if(manual) showToast('تعذر تحديث التقويم، حاول مرة أخرى.');
     }
+    // self-heal: silently retry in the background in a few minutes without needing the user to tap anything
+    clearTimeout(state.calendarRetryTimer);
+    state.calendarRetryTimer = setTimeout(() => loadCalendar(false), 4 * 60000);
   }finally{
     if(manual){ btn.disabled = false; btn.classList.remove('spinning'); }
   }
@@ -2445,7 +2473,7 @@ async function loadAsset(asset, fullAnalysis = true){
     const rsi = computeRSI(closes);
     const macd = computeMACD(closes);
     const fib = computeFibonacci(candles);
-    const sr = computeSupportResistance(candles);
+    const sr = computeSupportResistance(candles, livePrice);
     const ema = computeEMAs(closes);
     const atr = computeATR(candles);
     const boll = computeBollinger(closes);
@@ -2694,6 +2722,21 @@ function init(){
       drawLineChart('priceChart', candles, ACCENT.gold);
       const macd = computeMACD(candles.map(c => c.close));
       drawMacdChart(macd);
+    }
+  });
+
+  // reflect current notification permission on load, and re-arm reminders when the app
+  // comes back to the foreground — mobile browsers suspend setTimeout while backgrounded,
+  // so timers scheduled hours ago can silently die; this refreshes them whenever the user reopens the app.
+  if('Notification' in window){
+    if(Notification.permission === 'granted') $('notifBtn').textContent = '🔔✅';
+    else if(Notification.permission === 'default') $('notifStatus').textContent = 'فعّل 🔔 لتصلك تنبيهات قبل الأخبار المهمة بـ 15 و5 دقائق.';
+  }
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'visible'){
+      if(state.calendarEvents && state.calendarEvents.length) scheduleReminders(state.calendarEvents);
+      loadAsset('gold', false);
+      loadCalendar();
     }
   });
 
