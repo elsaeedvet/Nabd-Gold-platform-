@@ -120,6 +120,13 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 .session-status{ font-size:10px; color: var(--text-dim); }
 .session-box.open .session-status{ color: var(--bull); font-weight:700; }
 .session-countdown{ font-family: var(--font-mono); font-size:9.5px; color: var(--text-dim); }
+.session-closed-banner{
+  flex-direction: row; justify-content: space-between; padding:12px 14px;
+  background: linear-gradient(160deg, rgba(255,77,94,.08), var(--surface-2));
+  border-color: var(--bear);
+}
+.session-closed-banner .session-name{ color: var(--bear); font-size:12px; }
+.session-closed-banner .session-countdown{ font-size:10.5px; }
 
 /* ---------- decision card + traffic light + verdict ---------- */
 .decision-card{
@@ -866,6 +873,7 @@ const state = {
   calendarTimer: null,
   calendarRetryTimer: null,
   calendarEvents: [],
+  lastCalendarFetchAt: null,
   loading: false,
 };
 
@@ -2039,11 +2047,16 @@ const BIAS_LABEL = {
 
 function normalizeTEEvent(e){
   // TradingEconomics fields: Date, Country, Category/Event, Actual, Forecast, Previous, Importance(1/2/3)
+  // IMPORTANT: TE's "Date" field looks like "2023-04-03T14:00:00" — NO timezone suffix.
+  // Per the JS Date spec, a date-time string with no offset is parsed as LOCAL time, but TE's
+  // times are actually UTC. Without correcting this, events can land on the wrong calendar day
+  // for anyone not in UTC+0 (e.g. shifted by 2-3 hours for Cairo time, which crosses midnight
+  // for late-evening/early-morning releases). We fix this by explicitly appending "Z".
   const impactMap = { 1: 'Low', 2: 'Medium', 3: 'High' };
   return {
     title: e.Event || e.Category || '—',
     country: 'USD',
-    date: e.Date,
+    date: /Z$|[+-]\d{2}:?\d{2}$/.test(e.Date) ? e.Date : e.Date + 'Z',
     impact: impactMap[e.Importance] || 'Low',
     actual: (e.Actual === null || e.Actual === undefined) ? '' : String(e.Actual),
     forecast: (e.Forecast === null || e.Forecast === undefined) ? '' : String(e.Forecast),
@@ -2059,13 +2072,14 @@ function fetchWithTimeout(url, opts = {}, timeoutMs = 8000){
 
 async function fetchFromForexFactory(){
   // Direct request usually succeeds (nfs.faireconomy.media allows CORS) — try it first.
+  // NOTE: ForexFactory hard-limits these export files to ~2 requests/5min per source IP and
+  // returns an HTML "Request Denied" page past that (which correctly fails JSON.parse below and
+  // falls through). Keep this list SHORT — hammering multiple mirrors in one load burns that
+  // shared quota fast and makes failures more likely, not less.
   const directUrl = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
   const proxies = [
     directUrl,
     'https://api.allorigins.win/raw?url=' + encodeURIComponent(directUrl),
-    'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(directUrl),
-    'https://corsproxy.io/?' + encodeURIComponent(directUrl),
-    'https://r.jina.ai/' + directUrl,
   ];
   let lastError = null;
   for(const url of proxies){
@@ -2073,7 +2087,7 @@ async function fetchFromForexFactory(){
       const res = await fetchWithTimeout(url, { cache: 'no-store' });
       if(!res.ok) throw new Error('bad status ' + res.status);
       const text = await res.text();
-      const all = JSON.parse(text);
+      const all = JSON.parse(text); // throws cleanly if we got the "Request Denied" HTML page instead
       if(!Array.isArray(all)) throw new Error('unexpected response (rate-limited or blocked)');
       const events = all
         .filter(e => e.country === 'USD' && e.impact === 'High')
@@ -2095,7 +2109,6 @@ async function fetchFromTradingEconomics(){
   const urls = [
     directUrl,
     'https://api.allorigins.win/raw?url=' + encodeURIComponent(directUrl),
-    'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(directUrl),
   ];
   let lastError = null;
   for(const url of urls){
@@ -2308,11 +2321,17 @@ function renderCalendar(events){
 }
 
 async function loadCalendar(manual = false){
+  // avoid hammering the free external sources: reuse a very recent successful fetch
+  // instead of re-requesting (this is also what causes intermittent failures/rate-limits)
+  if(!manual && state.lastCalendarFetchAt && (Date.now() - state.lastCalendarFetchAt) < 10 * 60000){
+    return;
+  }
   const btn = $('calRefreshBtn');
   if(manual){ btn.disabled = true; btn.classList.add('spinning'); showToast('جارٍ تحديث التقويم…'); }
   try{
     const events = await fetchEconomicCalendar();
     state.calendarEvents = events;
+    state.lastCalendarFetchAt = Date.now();
     renderCalendar(events);
     $('calendarUpdated').textContent = `آخر تحديث: ${new Date().toLocaleString('ar-EG', { weekday:'long', hour:'2-digit', minute:'2-digit' })}`;
     scheduleReminders(events);
@@ -2611,19 +2630,46 @@ function updateRiskCalculator(){
 /* ===================== Market sessions widget ===================== */
 
 const MARKET_SESSIONS = [
-  { name: 'سيدني', openUTC: 21, closeUTC: 6 },
+  { name: 'سيدني', openUTC: 22, closeUTC: 7 },
   { name: 'طوكيو', openUTC: 0, closeUTC: 9 },
-  { name: 'لندن', openUTC: 7, closeUTC: 16 },
-  { name: 'نيويورك', openUTC: 12, closeUTC: 21 },
+  { name: 'لندن', openUTC: 8, closeUTC: 17 },
+  { name: 'نيويورك', openUTC: 13, closeUTC: 22 },
 ];
+
+// The whole forex/gold market is closed for the weekend from Friday 22:00 UTC
+// (New York close) until Sunday 22:00 UTC (Sydney open) — this is a hard weekly
+// closure that applies on top of the individual daily session hours above.
+const WEEK_MARKET_OPEN_MIN = 5 * 1440 + 22 * 60;  // Friday 22:00 UTC (minutes since Sunday 00:00 UTC)
+const WEEK_MARKET_CLOSE_MIN = 1320;                // Sunday 22:00 UTC
 
 function renderSessions(){
   const row = $('sessionsRow');
   if(!row) return;
   const now = new Date();
   const utcHour = now.getUTCHours() + now.getUTCMinutes() / 60;
+  const dow = now.getUTCDay(); // 0 = Sunday
+  const weekMinute = dow * 1440 + utcHour * 60;
+
+  // weekly-closed window wraps across the week boundary (Fri 22:00 -> Sun 22:00)
+  const isWeekendClosed = weekMinute >= WEEK_MARKET_OPEN_MIN || weekMinute < WEEK_MARKET_CLOSE_MIN;
 
   row.innerHTML = '';
+
+  if(isWeekendClosed){
+    let minutesToOpen = WEEK_MARKET_CLOSE_MIN - weekMinute;
+    if(minutesToOpen < 0) minutesToOpen += 10080;
+    const hrs = Math.floor(minutesToOpen / 60);
+    const mins = Math.round(minutesToOpen % 60);
+    const banner = document.createElement('div');
+    banner.className = 'session-box session-closed-banner';
+    banner.style.gridColumn = '1 / -1';
+    banner.innerHTML = `
+      <span class="session-name">🌙 السوق مغلق — عطلة نهاية الأسبوع</span>
+      <span class="session-countdown">يفتح الأحد الساعة ٢٢:٠٠ (توقيت UTC) — خلال ${hrs}س ${mins}د</span>`;
+    row.appendChild(banner);
+    return;
+  }
+
   MARKET_SESSIONS.forEach(s => {
     let isOpen;
     if(s.openUTC < s.closeUTC) isOpen = utcHour >= s.openUTC && utcHour < s.closeUTC;
