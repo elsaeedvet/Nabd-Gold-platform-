@@ -80,6 +80,31 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 .asset-banner-name{ font-size:15px; font-weight:700; color: var(--gold-glow); }
 .asset-banner-sym{ font-family: var(--font-mono); font-size:11px; letter-spacing:1px; color: var(--text-dim); }
 
+/* ---------- prominent market status banner ---------- */
+.market-status-banner{
+  display:flex; align-items:center; gap:10px; margin:0 0 12px;
+  padding:12px 14px; border-radius: var(--radius-md); border:1px solid var(--border);
+}
+.market-status-icon{ font-size:22px; line-height:1; }
+.market-status-text{ display:flex; flex-direction:column; gap:2px; }
+.market-status-title{ font-weight:800; font-size:14px; }
+.market-status-sub{ font-size:11px; color: var(--text-dim); }
+.market-status-banner.status-open{
+  background: linear-gradient(160deg, rgba(0,229,160,.10), var(--surface));
+  border-color: var(--bull);
+}
+.market-status-banner.status-open .market-status-title{ color: var(--bull); }
+.market-status-banner.status-closed{
+  background: linear-gradient(160deg, rgba(255,77,94,.12), var(--surface));
+  border-color: var(--bear);
+  animation: market-closed-pulse 2.4s ease-in-out infinite;
+}
+.market-status-banner.status-closed .market-status-title{ color: var(--bear); }
+@keyframes market-closed-pulse{
+  0%, 100%{ box-shadow: 0 0 0 rgba(255,77,94,0); }
+  50%{ box-shadow: 0 0 16px rgba(255,77,94,.35); }
+}
+
 /* ---------- price hero ---------- */
 .price-hero{
   background: linear-gradient(160deg, rgba(240,185,11,.10), var(--surface) 55%);
@@ -144,6 +169,8 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 .traffic-light.tl-sell{ border-color: var(--bear); box-shadow: 0 0 14px rgba(255,77,94,.15); }
 .traffic-light.tl-sell .tl-text{ color: var(--bear); }
 .traffic-light.tl-wait .tl-text{ color: var(--gold-glow); }
+.traffic-light.tl-closed{ border-color: var(--text-dim); opacity:.85; }
+.traffic-light.tl-closed .tl-text{ color: var(--text-dim); }
 .should-enter-btn{
   flex-shrink:0; background: linear-gradient(135deg, var(--gold), #c8940a);
   color:#0A0D14; font-weight:800; font-size:13px; border:none;
@@ -569,6 +596,14 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
     </div>
   </div>
 
+  <div id="marketStatusBanner" class="market-status-banner status-open">
+    <span id="marketStatusIcon" class="market-status-icon">🟢</span>
+    <div class="market-status-text">
+      <span id="marketStatusTitle" class="market-status-title">السوق مفتوح الآن</span>
+      <span id="marketStatusSub" class="market-status-sub">—</span>
+    </div>
+  </div>
+
   <main>
 
     <section class="price-hero">
@@ -845,6 +880,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
       <button id="saveSettings" class="primary-btn" type="button">حفظ</button>
       <button id="closeSettings" class="ghost-btn" type="button">إغلاق</button>
     </div>
+    <p style="text-align:center;font-size:10px;color:var(--text-dim);margin-top:10px;">إصدار البناء: <span id="buildStamp" style="font-family:var(--font-mono);"></span></p>
   </div>
 </div>
 
@@ -854,6 +890,8 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 'use strict';
 
 /* ===================== State ===================== */
+
+const APP_BUILD = '2026-07-04-01'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -2487,6 +2525,13 @@ async function loadAsset(asset, fullAnalysis = true){
       sourceLabel = 'Binance · PAXG/USDT (بديل للذهب، فريم الساعة)';
     }
 
+    const marketStatus = getMarketStatus();
+    if(marketStatus.isClosed){
+      sourceLabel += state.goldSource === 'twelvedata'
+        ? ' — ⚠️ آخر سعر قبل إغلاق السوق (غير حي الآن)'
+        : ' — ملاحظة: أسواق الكريبتو لا تغلق، لكنها قد لا تعكس سعر الذهب الفعلي أثناء إغلاق السوق التقليدي';
+    }
+
     state.candles.gold = candles;
     const closes = candles.map(c => c.close);
     const rsi = computeRSI(closes);
@@ -2515,6 +2560,16 @@ async function loadAsset(asset, fullAnalysis = true){
     const upcomingEvent = getUpcomingHighImpactEvent();
     const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, price: livePrice, upcomingEvent });
 
+    // Hard safety gate: never present an actionable trade recommendation while the
+    // market is closed — the underlying data isn't live and no order could be placed anyway.
+    rec.marketClosed = marketStatus.isClosed;
+    if(marketStatus.isClosed){
+      rec.levels = null;
+      rec.confidence = null;
+      rec.trafficLight = { key: 'closed', emoji: '🔒', text: 'السوق مغلق' };
+      rec.reasons = [{ bias: 'neutral', text: '🔒 السوق مغلق حاليًا (عطلة نهاية الأسبوع) — التحليل معروض للدراسة فقط ولن تظهر توصية دخول فعلية حتى إعادة فتح السوق.' }, ...rec.reasons];
+    }
+
     if(fullAnalysis){
       // freeze everything tied to the decision so it stays stable until the user re-analyzes
       state.frozenLevels.gold = rec.levels;
@@ -2529,8 +2584,9 @@ async function loadAsset(asset, fullAnalysis = true){
       renderAll({ asset, livePrice, changePercent, sourceLabel, candles, rsi, macd, fib, sr, ema, atr, boll, vwap, candlePattern, chartPattern, structure, orderBlocks, fvg, rec, renderLevels: true });
       updateAnalysisTimestamp(asset);
       renderAIAnalysis(null);
-      if(rec.levels){
+      if(rec.levels && !marketStatus.isClosed){
         // fetch the deep AI analysis in the background without blocking the UI
+        // (skipped entirely while the market is closed — nothing actionable to explain)
         fetchAIAnalysis({ rsi, macd, fib, sr, candlePattern, chartPattern, structure, price: livePrice, rec, upcomingEvent })
           .then(text => { state.frozenAI.gold = text; renderAIAnalysis(text); })
           .catch(() => { renderAIAnalysis(null); });
@@ -2627,7 +2683,7 @@ function updateRiskCalculator(){
     <p style="margin:8px 0 0;font-size:10.5px;color:var(--text-dim);">* الحساب يفترض عقد قياسي لـ XAU/USD (١ لوت = ١٠٠ أونصة). قيمة النقطة الفعلية قد تختلف حسب الوسيط — تحقق منها قبل التنفيذ.</p>`;
 }
 
-/* ===================== Market sessions widget ===================== */
+/* ===================== Market status (shared source of truth) ===================== */
 
 const MARKET_SESSIONS = [
   { name: 'سيدني', openUTC: 22, closeUTC: 7 },
@@ -2642,29 +2698,60 @@ const MARKET_SESSIONS = [
 const WEEK_MARKET_OPEN_MIN = 5 * 1440 + 22 * 60;  // Friday 22:00 UTC (minutes since Sunday 00:00 UTC)
 const WEEK_MARKET_CLOSE_MIN = 1320;                // Sunday 22:00 UTC
 
+// Single source of truth for "is the market open right now?" — used by the sessions
+// widget, the top banner, AND the recommendation engine, so all three can never disagree.
+function getMarketStatus(){
+  const now = new Date();
+  const utcHour = now.getUTCHours() + now.getUTCMinutes() / 60;
+  const dow = now.getUTCDay();
+  const weekMinute = dow * 1440 + utcHour * 60;
+  const isClosed = weekMinute >= WEEK_MARKET_OPEN_MIN || weekMinute < WEEK_MARKET_CLOSE_MIN;
+
+  let minutesToChange;
+  if(isClosed){
+    minutesToChange = WEEK_MARKET_CLOSE_MIN - weekMinute;
+    if(minutesToChange < 0) minutesToChange += 10080;
+  } else {
+    minutesToChange = WEEK_MARKET_OPEN_MIN - weekMinute;
+    if(minutesToChange < 0) minutesToChange += 10080;
+  }
+  return { isClosed, utcHour, dow, minutesToChange };
+}
+
+function renderMarketStatusBanner(status){
+  const banner = $('marketStatusBanner');
+  const hrs = Math.floor(status.minutesToChange / 60);
+  const mins = Math.round(status.minutesToChange % 60);
+  if(status.isClosed){
+    banner.className = 'market-status-banner status-closed';
+    $('marketStatusIcon').textContent = '🔴';
+    $('marketStatusTitle').textContent = 'السوق مغلق الآن — عطلة نهاية الأسبوع';
+    $('marketStatusSub').textContent = `يفتح الأحد الساعة ١٠ مساءً UTC — خلال ${hrs}س ${mins}د. التوصيات والصفقات موقوفة حتى إعادة الفتح.`;
+  } else {
+    banner.className = 'market-status-banner status-open';
+    $('marketStatusIcon').textContent = '🟢';
+    $('marketStatusTitle').textContent = 'السوق مفتوح الآن — متابعة حية';
+    $('marketStatusSub').textContent = `يغلق نهاية الأسبوع خلال ${hrs}س ${mins}د (الجمعة ١٠ مساءً UTC).`;
+  }
+}
+
 function renderSessions(){
   const row = $('sessionsRow');
   if(!row) return;
-  const now = new Date();
-  const utcHour = now.getUTCHours() + now.getUTCMinutes() / 60;
-  const dow = now.getUTCDay(); // 0 = Sunday
-  const weekMinute = dow * 1440 + utcHour * 60;
-
-  // weekly-closed window wraps across the week boundary (Fri 22:00 -> Sun 22:00)
-  const isWeekendClosed = weekMinute >= WEEK_MARKET_OPEN_MIN || weekMinute < WEEK_MARKET_CLOSE_MIN;
+  const status = getMarketStatus();
+  renderMarketStatusBanner(status);
+  const utcHour = status.utcHour;
 
   row.innerHTML = '';
 
-  if(isWeekendClosed){
-    let minutesToOpen = WEEK_MARKET_CLOSE_MIN - weekMinute;
-    if(minutesToOpen < 0) minutesToOpen += 10080;
-    const hrs = Math.floor(minutesToOpen / 60);
-    const mins = Math.round(minutesToOpen % 60);
+  if(status.isClosed){
+    const hrs = Math.floor(status.minutesToChange / 60);
+    const mins = Math.round(status.minutesToChange % 60);
     const banner = document.createElement('div');
     banner.className = 'session-box session-closed-banner';
     banner.style.gridColumn = '1 / -1';
     banner.innerHTML = `
-      <span class="session-name">🌙 السوق مغلق — عطلة نهاية الأسبوع</span>
+      <span class="session-name">🌙 كل الجلسات مغلقة — عطلة نهاية الأسبوع</span>
       <span class="session-countdown">يفتح الأحد الساعة ٢٢:٠٠ (توقيت UTC) — خلال ${hrs}س ${mins}د</span>`;
     row.appendChild(banner);
     return;
@@ -2699,6 +2786,12 @@ function renderSessions(){
 /* ===================== "Should I enter now?" verdict ===================== */
 
 async function evaluateShouldEnter(){
+  const marketStatus = getMarketStatus();
+  if(marketStatus.isClosed){
+    showVerdict({ trafficLight: { key: 'closed', emoji: '🔒', text: 'السوق مغلق' }, confidence: null,
+      reasons: [{ bias: 'neutral', text: 'السوق مغلق حاليًا (عطلة نهاية الأسبوع) — لا يمكن تنفيذ أي صفقة الآن، وسيُستأنف التحليل الحي عند إعادة الفتح.' }] });
+    return;
+  }
   const btn = $('shouldEnterBtn');
   btn.disabled = true;
   const originalText = btn.textContent;
@@ -2717,7 +2810,8 @@ function showVerdict(rec){
   const banner = $('verdictBanner');
   banner.classList.remove('hidden', 'v-enter', 'v-wait', 'v-avoid');
   let cls, icon, title;
-  if(rec.trafficLight.key === 'buy'){ cls = 'v-enter'; icon = '✅'; title = `ادخل الآن — ${rec.trafficLight.text} (ثقة ${rec.confidence}%)`; }
+  if(rec.trafficLight.key === 'closed'){ cls = 'v-wait'; icon = '🔒'; title = 'السوق مغلق — لا صفقات الآن'; }
+  else if(rec.trafficLight.key === 'buy'){ cls = 'v-enter'; icon = '✅'; title = `ادخل الآن — ${rec.trafficLight.text} (ثقة ${rec.confidence}%)`; }
   else if(rec.trafficLight.key === 'sell'){ cls = 'v-enter'; icon = '✅'; title = `ادخل الآن — ${rec.trafficLight.text} (ثقة ${rec.confidence}%)`; }
   else { cls = 'v-wait'; icon = '⏳'; title = 'انتظر — الفرصة غير مكتملة بعد'; }
   banner.classList.add(cls);
@@ -2736,6 +2830,7 @@ function showVerdict(rec){
 function init(){
   const loader = document.getElementById('initLoader');
   if(loader) loader.style.display='none';
+  $('buildStamp').textContent = APP_BUILD;
 
   $('settingsBtn').addEventListener('click', openSettings);
   $('closeSettings').addEventListener('click', closeSettings);
