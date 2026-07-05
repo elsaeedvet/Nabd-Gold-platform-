@@ -799,6 +799,15 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
       </div>
 
       <div class="indicator-card span-2">
+        <h3>قوة الاستراتيجية <span class="ind-sub">نظام السوق · فريم أعلى · انحراف</span></h3>
+        <div class="smc-zones">
+          <div id="regimeBox" class="smc-zone-box">—</div>
+          <div id="htfBox" class="smc-zone-box">—</div>
+          <div id="divergenceBox" class="smc-zone-box">—</div>
+        </div>
+      </div>
+
+      <div class="indicator-card span-2">
         <h3>🧮 إدارة المخاطر</h3>
         <div class="risk-inputs">
           <label>رصيد الحساب ($)
@@ -809,6 +818,15 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
           </label>
         </div>
         <div id="riskOutput" class="risk-output">فعّل تحليلاً لعرض حجم اللوت المقترح ومبالغ المخاطرة/العائد.</div>
+      </div>
+
+      <div class="indicator-card span-2">
+        <h3>📊 اختبار الاستراتيجية على بيانات تاريخية (Backtest)</h3>
+        <p style="font-size:11.5px;color:var(--text-dim);margin-bottom:10px;line-height:1.6;">
+          يعيد تشغيل نفس منطق التوصية على آخر عدة أسابيع من الشموع الفعلية بدون رؤية مسبقة للبيانات، ويحسب نسبة النجاح الحقيقية لهذا النظام بدل الاكتفاء بادعائها.
+        </p>
+        <button id="backtestBtn" class="reanalyze-btn" type="button">▶️ تشغيل الاختبار الخلفي</button>
+        <div id="backtestOutput" class="risk-output" style="margin-top:10px;"></div>
       </div>
 
     </section>
@@ -891,7 +909,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-04-01'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-05-01'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -907,6 +925,7 @@ const state = {
   frozenStructure: { gold: null },
   frozenOB: { gold: null },
   frozenFVG: { gold: null },
+  frozenHtfTrend: { gold: null },
   refreshTimer: null,
   calendarTimer: null,
   calendarRetryTimer: null,
@@ -979,8 +998,8 @@ async function fetchBinanceTicker(symbol){
   return { price: parseFloat(d.lastPrice), changePercent: parseFloat(d.priceChangePercent) };
 }
 
-async function fetchTwelveDataSeries(apikey){
-  const url = `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=1h&outputsize=200&apikey=${apikey}`;
+async function fetchTwelveDataSeries(apikey, interval = '1h', outputsize = 200){
+  const url = `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=${interval}&outputsize=${outputsize}&apikey=${apikey}`;
   const res = await fetch(url);
   const d = await res.json();
   if(d.status === 'error' || !d.values) throw new Error(d.message || 'مفتاح TwelveData غير صالح');
@@ -1019,6 +1038,79 @@ function computeRSI(closes, period = 14){
   if(avgLoss === 0) return 100;
   const rs = avgGain / avgLoss;
   return 100 - (100 / (1 + rs));
+}
+
+// Same math as computeRSI but returns the FULL time-aligned series (padded with null
+// during the warm-up period) instead of just the latest value — needed to compare RSI's
+// own swing highs/lows against price's swing highs/lows for divergence detection.
+function computeRSISeries(closes, period = 14){
+  const out = new Array(closes.length).fill(null);
+  if(closes.length < period + 1) return out;
+  let gains = 0, losses = 0;
+  for(let i = 1; i <= period; i++){
+    const diff = closes[i] - closes[i - 1];
+    if(diff >= 0) gains += diff; else losses -= diff;
+  }
+  let avgGain = gains / period, avgLoss = losses / period;
+  out[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  for(let i = period + 1; i < closes.length; i++){
+    const diff = closes[i] - closes[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    out[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  }
+  return out;
+}
+
+// Regular divergence: price and momentum disagreeing at swing points is one of the more
+// reliable, widely-documented reversal signals in technical analysis.
+function detectDivergence(candles, lookback = 60){
+  if(candles.length < lookback + 20) return null;
+  const closes = candles.map(c => c.close);
+  const rsiSeries = computeRSISeries(closes, 14);
+  const slice = candles.slice(-lookback);
+  const sliceStart = candles.length - lookback;
+  const pivots = findSwingPivots(slice, 3);
+  const highs = pivots.filter(p => p.type === 'high').sort((a, b) => a.idx - b.idx);
+  const lows = pivots.filter(p => p.type === 'low').sort((a, b) => a.idx - b.idx);
+  const rsiAt = (relIdx) => rsiSeries[sliceStart + relIdx];
+
+  if(highs.length >= 2){
+    const [h1, h2] = highs.slice(-2);
+    const r1 = rsiAt(h1.idx), r2 = rsiAt(h2.idx);
+    if(r1 != null && r2 != null && h2.price > h1.price * 1.0008 && r2 < r1 - 1.5){
+      return { type: 'bearish', desc: `انحراف سلبي (Bearish Divergence): السعر سجّل قمة أعلى عند ${formatPrice(h2.price)} بينما RSI سجّل قمة أدنى (${r2.toFixed(1)} مقابل ${r1.toFixed(1)}) — ضعف في الزخم يرجّح انعكاسًا هبوطيًا.` };
+    }
+  }
+  if(lows.length >= 2){
+    const [l1, l2] = lows.slice(-2);
+    const r1 = rsiAt(l1.idx), r2 = rsiAt(l2.idx);
+    if(r1 != null && r2 != null && l2.price < l1.price * 0.9992 && r2 > r1 + 1.5){
+      return { type: 'bullish', desc: `انحراف إيجابي (Bullish Divergence): السعر سجّل قاعًا أدنى عند ${formatPrice(l2.price)} بينما RSI سجّل قاعًا أعلى (${r2.toFixed(1)} مقابل ${r1.toFixed(1)}) — ضعف في زخم البيع يرجّح ارتدادًا صعوديًا.` };
+    }
+  }
+  return null;
+}
+
+// Kaufman's Efficiency Ratio: net directional movement ÷ total path traveled.
+// Close to 1 = clean, efficient trend. Close to 0 = choppy/ranging market.
+// This lets the recommendation engine trust different signals depending on regime
+// (breakouts/EMA-stack in a trend, RSI extremes/S-R bounces in a range).
+function computeEfficiencyRatio(closes, period = 20){
+  if(closes.length < period + 1) return null;
+  const recent = closes.slice(-period - 1);
+  const netChange = Math.abs(recent[recent.length - 1] - recent[0]);
+  let pathSum = 0;
+  for(let i = 1; i < recent.length; i++) pathSum += Math.abs(recent[i] - recent[i - 1]);
+  return pathSum > 0 ? netChange / pathSum : 0;
+}
+
+function detectMarketRegime(closes){
+  const er = computeEfficiencyRatio(closes, 20);
+  if(er == null) return null;
+  return { regime: er >= 0.35 ? 'trend' : 'range', efficiencyRatio: er };
 }
 
 function computeEMA(values, period){
@@ -1280,6 +1372,30 @@ function detectChartPattern(candles, lookback = 90){
   return null;
 }
 
+/* ===================== Multi-timeframe trend ===================== */
+
+async function fetchHigherTimeframeCandles(){
+  if(state.goldSource === 'twelvedata' && state.apiKey){
+    return await fetchTwelveDataSeries(state.apiKey, '4h', 150);
+  }
+  return await fetchBinanceKlines(SYMBOLS.goldPaxg, '4h', 150);
+}
+
+// A trend read from a higher timeframe (4H here, standing in for "the bigger picture")
+// used to gate H1 signals — one of the most consistently cited edges in retail trading:
+// only take trades in the direction the larger trend is already moving.
+function computeHigherTFTrend(htfCandles){
+  if(!htfCandles || htfCandles.length < 55) return null;
+  const closes = htfCandles.map(c => c.close);
+  const ema20 = computeEMA(closes, 20).at(-1);
+  const ema50 = computeEMA(closes, 50).at(-1);
+  const price = closes.at(-1);
+  let trend = 'neutral';
+  if(price > ema20 && ema20 > ema50) trend = 'up';
+  else if(price < ema20 && ema20 < ema50) trend = 'down';
+  return { trend, ema20, ema50, price };
+}
+
 /* ===================== SMC / ICT module ===================== */
 
 function detectMarketStructure(candles, lookback = 80){
@@ -1420,9 +1536,9 @@ function chartPatternIcon(name, bias){
 
 /* ===================== Recommendation engine ===================== */
 
-const TOTAL_POSSIBLE_SIGNALS = 11; // rsi, macd, fib, sr-support, sr-resistance, candle, chartPattern, ema, vwap, structure(BOS/CHOCH), OB/FVG
+const TOTAL_POSSIBLE_SIGNALS = 13; // rsi, macd, fib, sr-support, sr-resistance, candle, chartPattern, ema, vwap, structure(BOS/CHOCH), OB/FVG, divergence, regime-bonus
 
-function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, price, upcomingEvent }){
+function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, price, upcomingEvent, atTime = Date.now() }){
   let score = 0;
   const votes = [];
   const reasons = [];
@@ -1498,6 +1614,29 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
     else if(inZone(fvg.bear)){ score--; votes.push(-1); reasons.push({ bias: 'bear', text: `فجوة سيولة عادلة (FVG) هابطة غير مغلقة بين ${formatPrice(fvg.bear.bottom)} و${formatPrice(fvg.bear.top)}.` }); }
   }
 
+  // Regular divergence (price vs RSI) — one of the more reliable classic reversal signals
+  if(divergence){
+    if(divergence.type === 'bullish'){ score++; votes.push(1); reasons.push({ bias: 'bull', text: divergence.desc }); }
+    else { score--; votes.push(-1); reasons.push({ bias: 'bear', text: divergence.desc }); }
+  }
+
+  // Market regime bonus: trust the signals that actually fit the current regime a bit more,
+  // instead of weighting a breakout play the same as a range-bounce play regardless of context.
+  if(regime){
+    const regimeAr = regime.regime === 'trend' ? 'اتجاهي (Trending)' : 'تذبذبي (Ranging)';
+    if(regime.regime === 'trend' && structure && structure.event && structure.event.type === 'BOS'){
+      score += Math.sign(score) || (structure.event.bias === 'bull' ? 1 : -1);
+      votes.push(structure.event.bias === 'bull' ? 1 : -1);
+      reasons.push({ bias: 'neutral', text: `نظام السوق ${regimeAr} (كفاءة الحركة ${(regime.efficiencyRatio*100).toFixed(0)}%) — يدعم الاعتماد على كسر الهيكل والاستمرارية.` });
+    } else if(regime.regime === 'range' && rsi != null && (rsi <= 25 || rsi >= 75)){
+      score += rsi <= 25 ? 1 : -1;
+      votes.push(rsi <= 25 ? 1 : -1);
+      reasons.push({ bias: 'neutral', text: `نظام السوق ${regimeAr} (كفاءة الحركة ${(regime.efficiencyRatio*100).toFixed(0)}%) — يدعم الاعتماد على تشبع RSI والارتداد من الأطراف.` });
+    } else {
+      reasons.push({ bias: 'neutral', text: `نظام السوق الحالي: ${regimeAr} (كفاءة الحركة ${(regime.efficiencyRatio*100).toFixed(0)}%).` });
+    }
+  }
+
   const pct = Math.max(-100, Math.min(100, Math.round((score / TOTAL_POSSIBLE_SIGNALS) * 100)));
   let label, cls;
   if(score >= 4){ label = 'شراء قوي'; cls = 'rec-strong-buy'; }
@@ -1522,13 +1661,44 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
       eventWarning = `⚠️ يقترب حدث اقتصادي عالي التأثير (${upcomingEvent.nameAr}) خلال ${Math.round(minsAway)} دقيقة — يُفضّل الانتظار حتى صدوره قبل الدخول لتفادي التقلب الحاد.`;
     }
   }
+
+  // Session weighting: the London/New York overlap is historically the highest-liquidity,
+  // most reliable window; quiet late-Asia hours produce noisier, less trustworthy signals.
+  // Uses the bar's own time when backtesting (atTime), and the live clock otherwise.
+  const utcHour = new Date(atTime).getUTCHours();
+  const isPrimeOverlap = utcHour >= 12 && utcHour < 16;
+  const isThinHours = utcHour >= 21 || utcHour < 1;
+  let sessionNote = null;
+  if(isPrimeOverlap){
+    confidence += 6;
+    sessionNote = { bias: 'neutral', text: '⏱ التوقيت الحالي ضمن تداخل جلستي لندن ونيويورك — أعلى سيولة وأكثر موثوقية للإشارات.' };
+  } else if(isThinHours){
+    confidence -= 8;
+    sessionNote = { bias: 'neutral', text: '⏱ التوقيت الحالي في ساعات سيولة منخفضة (بعد إغلاق نيويورك وقبل نشاط آسيا) — الإشارات أقل موثوقية من المعتاد.' };
+  }
+  if(sessionNote) reasons.push(sessionNote);
+
   confidence = Math.max(30, Math.min(92, confidence));
 
   // -------- quality gate: a recommendation is only issued once enough confluence exists --------
   const MIN_VOTES_FOR_TRADE = 3;
   const MIN_SCORE_FOR_TRADE = 2;
   const MIN_CONFIDENCE_FOR_TRADE = 55;
-  const qualifies = directionalVotes.length >= MIN_VOTES_FOR_TRADE
+
+  // Multi-timeframe hard gate: one of the most consistently cited edges in trading is
+  // never fighting the higher-timeframe trend. If the 4H trend directly contradicts the
+  // H1 signal, the trade is blocked regardless of how good the H1 confluence looks.
+  const htfConflict = htfTrend && htfTrend.trend !== 'neutral' && (
+    (score > 0 && htfTrend.trend === 'down') || (score < 0 && htfTrend.trend === 'up')
+  );
+  if(htfConflict){
+    reasons.unshift({ bias: 'neutral', text: `⛔ تعارض مع الفريم الأعلى (4 ساعات): الاتجاه العام هناك ${htfTrend.trend === 'up' ? 'صاعد' : 'هابط'} بينما إشارة الساعة الحالية ${score > 0 ? 'شراء' : 'بيع'} — تم حجب التوصية حتى يزول التعارض.` });
+  } else if(htfTrend && htfTrend.trend !== 'neutral'){
+    reasons.push({ bias: 'neutral', text: `✅ توافق مع الفريم الأعلى (4 ساعات): الاتجاه العام هناك ${htfTrend.trend === 'up' ? 'صاعد' : 'هابط'}، متوافق مع اتجاه الإشارة الحالية.` });
+  }
+
+  const qualifies = !htfConflict
+    && directionalVotes.length >= MIN_VOTES_FOR_TRADE
     && Math.abs(score) >= MIN_SCORE_FOR_TRADE
     && confidence >= MIN_CONFIDENCE_FOR_TRADE;
 
@@ -1788,7 +1958,7 @@ const CANDLE_DESC_MAP = {
   'دوجي (تردد)': 'توازن بين المشترين والبائعين — انتظر التأكيد.',
 };
 
-function renderAll({ asset, livePrice, changePercent, sourceLabel, candles, rsi, macd, fib, sr, ema, atr, boll, vwap, candlePattern, chartPattern, structure, orderBlocks, fvg, rec, renderLevels = true }){
+function renderAll({ asset, livePrice, changePercent, sourceLabel, candles, rsi, macd, fib, sr, ema, atr, boll, vwap, candlePattern, chartPattern, structure, orderBlocks, fvg, divergence, regime, htfTrend, rec, renderLevels = true }){
   const accent = ACCENT.gold;
 
   $('priceValue').textContent = formatPrice(livePrice);
@@ -1946,6 +2116,35 @@ function renderAll({ asset, livePrice, changePercent, sourceLabel, candles, rsi,
   } else {
     liqEl.className = 'smc-zone-box';
     liqEl.textContent = 'لا توجد تجمعات سيولة واضحة';
+  }
+
+  // ---- Strategy edge: regime, higher-timeframe trend, divergence ----
+  const regimeEl = $('regimeBox');
+  if(regime){
+    const isTrend = regime.regime === 'trend';
+    regimeEl.className = 'smc-zone-box ' + (isTrend ? 'bull' : '');
+    regimeEl.innerHTML = `<strong>نظام السوق</strong><br>${isTrend ? '📈 اتجاهي (Trending)' : '↔️ تذبذبي (Ranging)'}<br><span style="opacity:.7">كفاءة الحركة: ${(regime.efficiencyRatio*100).toFixed(0)}%</span>`;
+  } else {
+    regimeEl.className = 'smc-zone-box';
+    regimeEl.textContent = 'بيانات غير كافية بعد';
+  }
+
+  const htfEl = $('htfBox');
+  if(htfTrend && htfTrend.trend !== 'neutral'){
+    htfEl.className = 'smc-zone-box ' + (htfTrend.trend === 'up' ? 'bull' : 'bear');
+    htfEl.innerHTML = `<strong>الفريم الأعلى (4H)</strong><br>${htfTrend.trend === 'up' ? '⬆️ اتجاه عام صاعد' : '⬇️ اتجاه عام هابط'}`;
+  } else {
+    htfEl.className = 'smc-zone-box';
+    htfEl.textContent = htfTrend ? 'الفريم الأعلى: محايد/غير حاسم' : 'غير متاح حاليًا';
+  }
+
+  const divEl = $('divergenceBox');
+  if(divergence){
+    divEl.className = 'smc-zone-box ' + (divergence.type === 'bullish' ? 'bull' : 'bear');
+    divEl.innerHTML = `<strong>الانحراف (Divergence)</strong><br>${divergence.type === 'bullish' ? '📈 إيجابي' : '📉 سلبي'}`;
+  } else {
+    divEl.className = 'smc-zone-box';
+    divEl.textContent = 'لا يوجد انحراف واضح حاليًا';
   }
 }
 
@@ -2543,22 +2742,29 @@ async function loadAsset(asset, fullAnalysis = true){
     const boll = computeBollinger(closes);
     const vwap = computeVWAP(candles);
     const candlePattern = detectCandlePattern(candles);
+    const divergence = detectDivergence(candles);
+    const regime = detectMarketRegime(closes);
 
-    let chartPattern, structure, orderBlocks, fvg;
+    let chartPattern, structure, orderBlocks, fvg, htfTrend;
     if(fullAnalysis){
       chartPattern = detectChartPattern(candles);
       structure = detectMarketStructure(candles);
       orderBlocks = detectOrderBlocks(candles);
       fvg = detectFVG(candles);
+      try{
+        const htfCandles = await fetchHigherTimeframeCandles();
+        htfTrend = computeHigherTFTrend(htfCandles);
+      }catch(e){ htfTrend = null; } // non-critical: proceed without the multi-timeframe gate if this fails
     } else {
       chartPattern = state.frozenChartPattern.gold;
       structure = state.frozenStructure.gold;
       orderBlocks = state.frozenOB.gold;
       fvg = state.frozenFVG.gold;
+      htfTrend = state.frozenHtfTrend.gold;
     }
 
     const upcomingEvent = getUpcomingHighImpactEvent();
-    const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, price: livePrice, upcomingEvent });
+    const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, price: livePrice, upcomingEvent });
 
     // Hard safety gate: never present an actionable trade recommendation while the
     // market is closed — the underlying data isn't live and no order could be placed anyway.
@@ -2580,8 +2786,9 @@ async function loadAsset(asset, fullAnalysis = true){
       state.frozenStructure.gold = structure;
       state.frozenOB.gold = orderBlocks;
       state.frozenFVG.gold = fvg;
+      state.frozenHtfTrend.gold = htfTrend;
       state.lastRec = rec;
-      renderAll({ asset, livePrice, changePercent, sourceLabel, candles, rsi, macd, fib, sr, ema, atr, boll, vwap, candlePattern, chartPattern, structure, orderBlocks, fvg, rec, renderLevels: true });
+      renderAll({ asset, livePrice, changePercent, sourceLabel, candles, rsi, macd, fib, sr, ema, atr, boll, vwap, candlePattern, chartPattern, structure, orderBlocks, fvg, divergence, regime, htfTrend, rec, renderLevels: true });
       updateAnalysisTimestamp(asset);
       renderAIAnalysis(null);
       if(rec.levels && !marketStatus.isClosed){
@@ -2594,7 +2801,7 @@ async function loadAsset(asset, fullAnalysis = true){
     } else {
       // price-only refresh: update price/chart/indicators but keep the frozen decision stable
       const recForDisplay = { ...rec, levels: state.frozenLevels.gold, confidence: state.frozenConfidence.gold };
-      renderAll({ asset, livePrice, changePercent, sourceLabel, candles, rsi, macd, fib, sr, ema, atr, boll, vwap, candlePattern, chartPattern, structure, orderBlocks, fvg, rec: recForDisplay, renderLevels: false });
+      renderAll({ asset, livePrice, changePercent, sourceLabel, candles, rsi, macd, fib, sr, ema, atr, boll, vwap, candlePattern, chartPattern, structure, orderBlocks, fvg, divergence, regime, htfTrend, rec: recForDisplay, renderLevels: false });
       renderAIAnalysis(state.frozenAI.gold);
     }
   }catch(err){
@@ -2652,6 +2859,128 @@ function saveSettings(){
 }
 
 /* ===================== Init ===================== */
+
+/* ===================== Backtesting engine ===================== */
+
+// Walk-forward simulation: re-runs the EXACT same live rule engine bar-by-bar using only
+// data available up to that bar (no lookahead), then checks whether price hit the target
+// or the stop first within the following window. This is what actually earns the word
+// "مجرّبة" (tested) instead of just asserting it.
+//
+// Known limitations, stated plainly rather than hidden:
+// - Does not include the 4H multi-timeframe gate or the live economic-calendar filter
+//   (no reliable historical news/4H data aligned to this feed) — so live signals are
+//   filtered MORE conservatively than what this backtest measures.
+// - Uses whichever candle source is currently active (PAXG proxy or TwelveData XAU/USD).
+// - Small sample sizes (a few dozen trades) are statistically weak — treat the numbers
+//   as a sanity check on the logic, not a guarantee of future performance.
+function runBacktest(candles, lookaheadBars = 48){
+  const trades = [];
+  const minHistory = 220;
+  let i = minHistory;
+
+  while(i < candles.length - 1){
+    const windowCandles = candles.slice(0, i + 1);
+    const closes = windowCandles.map(c => c.close);
+    const price = closes[closes.length - 1];
+
+    const rsi = computeRSI(closes);
+    const macd = computeMACD(closes);
+    const fib = computeFibonacci(windowCandles);
+    const sr = computeSupportResistance(windowCandles, price);
+    const ema = computeEMAs(closes);
+    const atr = computeATR(windowCandles);
+    const boll = computeBollinger(closes);
+    const vwap = computeVWAP(windowCandles);
+    const candlePattern = detectCandlePattern(windowCandles);
+    const chartPattern = detectChartPattern(windowCandles);
+    const structure = detectMarketStructure(windowCandles);
+    const orderBlocks = detectOrderBlocks(windowCandles);
+    const fvg = detectFVG(windowCandles);
+    const divergence = detectDivergence(windowCandles);
+    const regime = detectMarketRegime(closes);
+
+    const rec = buildRecommendation({
+      rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll,
+      structure, orderBlocks, fvg, divergence, regime, htfTrend: null,
+      price, upcomingEvent: null, atTime: windowCandles[windowCandles.length - 1].time,
+    });
+
+    if(rec.levels){
+      const { direction, entry, stop, tp1 } = rec.levels;
+      let outcome = 'open';
+      let exitIdx = Math.min(i + lookaheadBars, candles.length - 1);
+      for(let j = i + 1; j <= Math.min(i + lookaheadBars, candles.length - 1); j++){
+        const c = candles[j];
+        if(direction === 'buy'){
+          if(c.low <= stop){ outcome = 'loss'; exitIdx = j; break; }
+          if(c.high >= tp1){ outcome = 'win'; exitIdx = j; break; }
+        } else {
+          if(c.high >= stop){ outcome = 'loss'; exitIdx = j; break; }
+          if(c.low <= tp1){ outcome = 'win'; exitIdx = j; break; }
+        }
+      }
+      const risk = Math.abs(entry - stop);
+      const rMultiple = outcome === 'win' ? Math.abs(tp1 - entry) / risk : outcome === 'loss' ? -1 : 0;
+      trades.push({ idx: i, direction, outcome, rMultiple, confidence: rec.confidence });
+      i = exitIdx + 1; // skip past this trade's resolution so trades don't overlap
+    } else {
+      i++;
+    }
+  }
+
+  const decided = trades.filter(t => t.outcome !== 'open');
+  const wins = decided.filter(t => t.outcome === 'win').length;
+  const losses = decided.filter(t => t.outcome === 'loss').length;
+  const openCount = trades.length - decided.length;
+  const winRate = decided.length ? (wins / decided.length) * 100 : 0;
+  const avgR = decided.length ? decided.reduce((a, t) => a + t.rMultiple, 0) / decided.length : 0;
+  let maxLossStreak = 0, curStreak = 0;
+  decided.forEach(t => {
+    if(t.outcome === 'loss'){ curStreak++; maxLossStreak = Math.max(maxLossStreak, curStreak); }
+    else curStreak = 0;
+  });
+
+  return { totalTrades: trades.length, decided: decided.length, wins, losses, openCount, winRate, avgR, maxLossStreak, lookaheadBars };
+}
+
+async function runBacktestUI(){
+  const btn = $('backtestBtn');
+  const out = $('backtestOutput');
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = '⏳ جارٍ تشغيل الاختبار على البيانات التاريخية…';
+  out.innerHTML = '';
+  // let the UI repaint the loading state before the heavy synchronous loop runs
+  await new Promise(r => setTimeout(r, 30));
+  try{
+    let candles;
+    if(state.goldSource === 'twelvedata' && state.apiKey){
+      candles = await fetchTwelveDataSeries(state.apiKey, '1h', 800);
+    } else {
+      candles = await fetchBinanceKlines(SYMBOLS.goldPaxg, '1h', 1000);
+    }
+    const result = runBacktest(candles);
+    const days = Math.round((candles[candles.length - 1].time - candles[0].time) / 86400000);
+    const rrColor = result.avgR >= 0 ? 'var(--bull)' : 'var(--bear)';
+    out.innerHTML = `
+      <div class="risk-line"><span>الفترة المُختبرة</span><strong>~${days} يومًا (${candles.length} شمعة ساعة)</strong></div>
+      <div class="risk-line"><span>إجمالي الإشارات المؤهلة</span><strong>${result.totalTrades}</strong></div>
+      <div class="risk-line"><span>صفقات محسومة (فائزة/خاسرة)</span><strong>${result.decided}</strong></div>
+      <div class="risk-line"><span>نسبة النجاح الفعلية</span><strong style="color:${result.winRate>=50?'var(--bull)':'var(--bear)'}">${result.winRate.toFixed(1)}%</strong></div>
+      <div class="risk-line"><span>متوسط العائد بالنسبة للمخاطرة (R)</span><strong style="color:${rrColor}">${result.avgR>=0?'+':''}${result.avgR.toFixed(2)}R</strong></div>
+      <div class="risk-line"><span>أطول سلسلة خسائر متتالية</span><strong style="color:var(--bear)">${result.maxLossStreak}</strong></div>
+      <div class="risk-line"><span>صفقات لم تُحسم بعد خلال نافذة الاختبار</span><strong>${result.openCount}</strong></div>
+      <p style="margin:10px 0 0;font-size:10.5px;color:var(--text-dim);line-height:1.6;">
+        * اختبار "سير-للأمام" (walk-forward) بنفس منطق التوصية الحي بدون رؤية مسبقة للبيانات، لكنه لا يشمل فلتر الفريم الأعلى (4H) ولا التقويم الاقتصادي — الإشارات الحية أكثر تحفظًا من هذا الرقم. عدد صفقات قليل = دلالة إحصائية ضعيفة، اعتبره فحص منطقية النظام وليس ضمانًا لأي نتيجة مستقبلية.
+      </p>`;
+  }catch(e){
+    out.innerHTML = `<p style="color:var(--bear);font-size:12.5px;">تعذر تشغيل الاختبار: ${escapeHtml(e.message)}</p>`;
+  }finally{
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
 
 /* ===================== Risk management calculator ===================== */
 
@@ -2856,6 +3185,7 @@ function init(){
   $('verdictClose').addEventListener('click', () => $('verdictBanner').classList.add('hidden'));
   $('riskBalance').addEventListener('input', updateRiskCalculator);
   $('riskPct').addEventListener('input', updateRiskCalculator);
+  $('backtestBtn').addEventListener('click', runBacktestUI);
 
   window.addEventListener('resize', () => {
     const candles = state.candles.gold;

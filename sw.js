@@ -1,4 +1,4 @@
-const CACHE_NAME = 'nabd-shell-v4';
+const CACHE_NAME = 'nabd-shell-v5';
 const SHELL_FILES = [
   './manifest.json',
 ];
