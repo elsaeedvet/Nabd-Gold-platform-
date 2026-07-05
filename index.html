@@ -402,6 +402,37 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 }
 .tl-rr strong{ color: var(--text); }
 
+/* ---------- locked signal cards ---------- */
+.signals-section{ margin-top:14px; }
+.signals-heading{ font-size:14px; margin-bottom:4px; }
+.signals-subheading{ font-size:11px; color: var(--text-dim); line-height:1.6; margin-bottom:12px; }
+.signals-list{ display:flex; flex-direction:column; gap:12px; }
+.signals-empty{ font-size:12.5px; color: var(--text-dim); text-align:center; padding:16px 0; }
+.signal-card{
+  border-radius: var(--radius-md); padding:12px 14px; background: var(--surface-2);
+  border:1px solid var(--border); position:relative;
+}
+.signal-card.dir-buy{ border-inline-start:4px solid var(--bull); }
+.signal-card.dir-sell{ border-inline-start:4px solid var(--bear); }
+.signal-card.status-closed{ opacity:.7; }
+.signal-card-header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; gap:8px; }
+.signal-card-title{ font-weight:800; font-size:13.5px; display:flex; align-items:center; gap:6px; }
+.signal-card-title.buy{ color: var(--bull); }
+.signal-card-title.sell{ color: var(--bear); }
+.signal-status-badge{ font-size:11px; font-weight:700; padding:3px 9px; border-radius:999px; white-space:nowrap; }
+.signal-status-badge.open{ background: rgba(240,185,11,.15); color: var(--gold-glow); border:1px solid var(--gold); }
+.signal-status-badge.win{ background: rgba(0,229,160,.15); color: var(--bull); border:1px solid var(--bull); }
+.signal-status-badge.loss{ background: rgba(255,77,94,.15); color: var(--bear); border:1px solid var(--bear); }
+.signal-status-badge.expired{ background: var(--surface); color: var(--text-dim); border:1px solid var(--border); }
+.signal-meta{ font-size:10.5px; color: var(--text-dim); margin-bottom:8px; }
+.signal-dismiss{
+  position:absolute; top:10px; left:10px; background:none; border:none;
+  color: var(--text-dim); font-size:14px; cursor:pointer; padding:2px 6px;
+}
+.signal-reasons{ list-style:none; margin:8px 0 0; padding:0; display:flex; flex-direction:column; gap:4px; }
+.signal-reasons li{ font-size:11px; color: var(--text-dim); line-height:1.5; padding-right:12px; position:relative; }
+.signal-reasons li::before{ content:"•"; position:absolute; right:0; color: var(--gold-glow); }
+
 /* ---------- candle pattern updated ---------- */
 .candle-pattern{
   display:flex; align-items:center; justify-content:space-between;
@@ -699,42 +730,12 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
         <p id="aiAnalysisText" class="ai-analysis-text">—</p>
       </div>
 
-      <div id="tradeLevels" class="trade-levels hidden">
-        <div id="confidenceBar" class="confidence-bar">
-          <span class="confidence-label">احتمالية نجاح الصفقة</span>
-          <span id="confidenceValue" class="confidence-value">—</span>
+      <div id="signalsSection" class="signals-section">
+        <h3 class="signals-heading">🔒 التوصيات الثابتة</h3>
+        <p class="signals-subheading">كل توصية بتتثبّت لحظة ظهورها بنقاط دخول/خروج نهائية، ومش بتتغيّر مع حركة السعر. لو ظهرت فرصة جديدة، بتتضاف كبطاقة منفصلة.</p>
+        <div id="signalsList" class="signals-list">
+          <p class="signals-empty">لا توجد توصيات ثابتة حاليًا — اضغط "تحديث التحليل" لفحص السوق.</p>
         </div>
-        <div class="trade-level-row">
-          <div class="trade-level-box tl-entry">
-            <span class="tl-label">نقطة الدخول</span>
-            <span id="tlEntry" class="tl-value">—</span>
-          </div>
-          <div class="trade-level-box tl-stop">
-            <span class="tl-label">وقف الخسارة</span>
-            <span id="tlStop" class="tl-value">—</span>
-          </div>
-        </div>
-        <div class="trade-level-row">
-          <div class="trade-level-box tl-tp1">
-            <span class="tl-label">هدف ١</span>
-            <span id="tlTp1" class="tl-value">—</span>
-            <span id="tlTp1Pct" class="tl-pct">—</span>
-          </div>
-          <div class="trade-level-box tl-tp2">
-            <span class="tl-label">هدف ٢</span>
-            <span id="tlTp2" class="tl-value">—</span>
-            <span id="tlTp2Pct" class="tl-pct">—</span>
-          </div>
-        </div>
-        <div class="trade-level-row">
-          <div class="trade-level-box tl-tp3">
-            <span class="tl-label">هدف ٣ (ممتد)</span>
-            <span id="tlTp3" class="tl-value">—</span>
-            <span id="tlTp3Pct" class="tl-pct">—</span>
-          </div>
-        </div>
-        <p id="tlRR" class="tl-rr">—</p>
-        <p class="tl-frozen-note">🔒 هذه المستويات ثابتة ولن تتغير مع حركة السعر — تتحدث فقط عند الضغط على "تحديث التحليل".</p>
       </div>
 
       <button id="reAnalyzeBtn" class="reanalyze-btn" type="button">
@@ -937,7 +938,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-05-02'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-05-03'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -959,12 +960,86 @@ const state = {
   calendarRetryTimer: null,
   calendarEvents: [],
   lastCalendarFetchAt: null,
+  signals: [],
   loading: false,
 };
 
 const SYMBOLS = { goldPaxg: 'PAXGUSDT' };
 
 const ACCENT = { gold: '#F0B90B' };
+
+/* ===================== Locked signal cards ===================== */
+// Each qualifying recommendation is locked at creation time (entry/stop/targets frozen
+// forever) and lives as its own persistent card until it hits a target/stop or expires.
+// A new qualifying setup becomes a NEW card — it never overwrites or moves an existing one.
+
+const SIGNAL_EXPIRY_HOURS = 48;
+const SIGNAL_ENTRY_DEDUPE_PCT = 0.003; // don't spawn a near-duplicate of an already-open signal
+
+function loadSignals(){
+  try{
+    const raw = localStorage.getItem('nabd_signals');
+    return raw ? JSON.parse(raw) : [];
+  }catch(e){ return []; }
+}
+
+function saveSignals(){
+  try{ localStorage.setItem('nabd_signals', JSON.stringify(state.signals)); }
+  catch(e){ /* storage full/unavailable — ignore, in-memory state still works this session */ }
+}
+
+function addSignalIfNew(rec){
+  if(!rec.levels) return;
+  const { direction, entry, stop, tp1, tp2, tp3 } = rec.levels;
+  const dupe = state.signals.find(s =>
+    s.status === 'open' && s.direction === direction &&
+    Math.abs(s.entry - entry) / entry < SIGNAL_ENTRY_DEDUPE_PCT
+  );
+  if(dupe) return; // same setup still standing — don't spawn a near-identical card
+
+  state.signals.unshift({
+    id: 'sig_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    createdAt: Date.now(),
+    direction, entry, stop, tp1, tp2, tp3,
+    confidence: rec.confidence,
+    reasons: rec.reasons.slice(0, 5),
+    status: 'open',
+    closedAt: null,
+  });
+  saveSignals();
+}
+
+function updateSignalStatuses(livePrice){
+  const now = Date.now();
+  let changed = false;
+  state.signals.forEach(s => {
+    if(s.status !== 'open') return;
+    if(now - s.createdAt > SIGNAL_EXPIRY_HOURS * 3600000){
+      s.status = 'expired'; s.closedAt = now; changed = true; return;
+    }
+    if(s.direction === 'buy'){
+      if(livePrice <= s.stop){ s.status = 'stop'; s.closedAt = now; changed = true; }
+      else if(livePrice >= s.tp3){ s.status = 'tp3'; s.closedAt = now; changed = true; }
+      else if(livePrice >= s.tp2){ s.status = 'tp2'; s.closedAt = now; changed = true; }
+      else if(livePrice >= s.tp1){ s.status = 'tp1'; s.closedAt = now; changed = true; }
+    } else {
+      if(livePrice >= s.stop){ s.status = 'stop'; s.closedAt = now; changed = true; }
+      else if(livePrice <= s.tp3){ s.status = 'tp3'; s.closedAt = now; changed = true; }
+      else if(livePrice <= s.tp2){ s.status = 'tp2'; s.closedAt = now; changed = true; }
+      else if(livePrice <= s.tp1){ s.status = 'tp1'; s.closedAt = now; changed = true; }
+    }
+  });
+  // keep the list from growing forever: drop closed signals older than 7 days
+  const before = state.signals.length;
+  state.signals = state.signals.filter(s => s.status === 'open' || (now - s.closedAt) < 7 * 86400000);
+  if(changed || state.signals.length !== before) saveSignals();
+}
+
+function dismissSignal(id){
+  state.signals = state.signals.filter(s => s.id !== id);
+  saveSignals();
+  renderSignalCards();
+}
 
 /* ===================== Helpers ===================== */
 
@@ -1960,27 +2035,56 @@ function renderSRList(sr, price){
   });
 }
 
-function renderTradeLevels(levels, confidence){
-  const el = $('tradeLevels');
-  if(!levels){ el.classList.add('hidden'); return; }
-  el.classList.remove('hidden');
-  $('tlEntry').textContent = formatPrice(levels.entry);
-  $('tlStop').textContent = `${formatPrice(levels.stop)} (${levels.stopPct}%)`;
-  $('tlTp1').textContent = formatPrice(levels.tp1);
-  $('tlTp1Pct').textContent = `+${levels.tp1Pct}%`;
-  $('tlTp2').textContent = formatPrice(levels.tp2);
-  $('tlTp2Pct').textContent = `+${levels.tp2Pct}%`;
-  $('tlTp3').textContent = formatPrice(levels.tp3);
-  $('tlTp3Pct').textContent = `+${levels.tp3Pct}%`;
-  $('tlRR').innerHTML = `<strong>${levels.rrText}</strong>`;
-  const cv = $('confidenceValue');
-  if(confidence != null){
-    cv.textContent = `${confidence}%`;
-    cv.style.color = confidence >= 65 ? 'var(--bull)' : confidence >= 45 ? 'var(--gold-glow)' : 'var(--bear)';
-  } else {
-    cv.textContent = '—';
+const SIGNAL_STATUS_LABEL = {
+  open:    { text: 'نشطة', cls: 'open' },
+  tp1:     { text: '✅ تحقق الهدف ١', cls: 'win' },
+  tp2:     { text: '✅ تحقق الهدف ٢', cls: 'win' },
+  tp3:     { text: '✅ تحقق الهدف ٣', cls: 'win' },
+  stop:    { text: '❌ ضرب وقف الخسارة', cls: 'loss' },
+  expired: { text: '⏱ انتهت صلاحيتها', cls: 'expired' },
+};
+
+function timeAgo(ts){
+  const mins = Math.round((Date.now() - ts) / 60000);
+  if(mins < 60) return `منذ ${mins} دقيقة`;
+  const hrs = Math.round(mins / 60);
+  if(hrs < 24) return `منذ ${hrs} ساعة`;
+  return `منذ ${Math.round(hrs / 24)} يوم`;
+}
+
+function renderSignalCards(){
+  const list = $('signalsList');
+  if(!state.signals.length){
+    list.innerHTML = '<p class="signals-empty">لا توجد توصيات ثابتة حاليًا — اضغط "تحديث التحليل" لفحص السوق.</p>';
+    return;
   }
-  updateRiskCalculator();
+  list.innerHTML = '';
+  state.signals.forEach(s => {
+    const isBuy = s.direction === 'buy';
+    const statusInfo = SIGNAL_STATUS_LABEL[s.status] || SIGNAL_STATUS_LABEL.open;
+    const card = document.createElement('div');
+    card.className = `signal-card dir-${s.direction} ${s.status !== 'open' ? 'status-closed' : ''}`;
+    card.innerHTML = `
+      <button class="signal-dismiss" title="إخفاء">✕</button>
+      <div class="signal-card-header">
+        <span class="signal-card-title ${s.direction}">${isBuy ? '🟢 شراء' : '🔴 بيع'} من ${formatPrice(s.entry)}</span>
+        <span class="signal-status-badge ${statusInfo.cls}">${statusInfo.text}</span>
+      </div>
+      <div class="signal-meta">${timeAgo(s.createdAt)} · نسبة الثقة عند الإصدار: ${s.confidence}%</div>
+      <div class="trade-level-row">
+        <div class="trade-level-box tl-entry"><span class="tl-label">الدخول</span><span class="tl-value">${formatPrice(s.entry)}</span></div>
+        <div class="trade-level-box tl-stop"><span class="tl-label">الوقف</span><span class="tl-value">${formatPrice(s.stop)}</span></div>
+      </div>
+      <div class="trade-level-row">
+        <div class="trade-level-box tl-tp1"><span class="tl-label">هدف ١</span><span class="tl-value">${formatPrice(s.tp1)}</span></div>
+        <div class="trade-level-box tl-tp2"><span class="tl-label">هدف ٢</span><span class="tl-value">${formatPrice(s.tp2)}</span></div>
+        <div class="trade-level-box tl-tp3"><span class="tl-label">هدف ٣</span><span class="tl-value">${formatPrice(s.tp3)}</span></div>
+      </div>
+      <ul class="signal-reasons">${s.reasons.slice(0, 3).map(r => `<li>${escapeHtml(r.text)}</li>`).join('')}</ul>
+    `;
+    card.querySelector('.signal-dismiss').addEventListener('click', () => dismissSignal(s.id));
+    list.appendChild(card);
+  });
 }
 
 const CANDLE_DESC_MAP = {
@@ -2009,22 +2113,36 @@ function renderFinalSummary(rec, livePrice){
     return;
   }
 
-  if(rec.levels){
-    const isBuy = rec.levels.direction === 'buy';
+  const openSignals = state.signals.filter(s => s.status === 'open');
+
+  if(openSignals.length === 1){
+    const s = openSignals[0];
+    const isBuy = s.direction === 'buy';
     card.className = 'final-summary-card ' + (isBuy ? 'fs-buy' : 'fs-sell');
     icon.textContent = isBuy ? '🟢' : '🔴';
-    headline.textContent = `${isBuy ? 'اشترِ' : 'بِع'} من نقطة ${formatPrice(rec.levels.entry)}`;
+    headline.textContent = `${isBuy ? 'اشترِ' : 'بِع'} من نقطة ${formatPrice(s.entry)} (ثابتة)`;
     details.innerHTML = `
-      <div class="fs-row"><span>وقف الخسارة</span><strong style="color:var(--bear)">${formatPrice(rec.levels.stop)}</strong></div>
-      <div class="fs-row"><span>الهدف الأول</span><strong style="color:var(--bull)">${formatPrice(rec.levels.tp1)}</strong></div>
-      <div class="fs-row"><span>الهدف الثاني</span><strong style="color:var(--bull)">${formatPrice(rec.levels.tp2)}</strong></div>
-      <div class="fs-row"><span>نسبة الثقة</span><strong>${rec.confidence}%</strong></div>`;
+      <div class="fs-row"><span>وقف الخسارة</span><strong style="color:var(--bear)">${formatPrice(s.stop)}</strong></div>
+      <div class="fs-row"><span>الهدف الأول</span><strong style="color:var(--bull)">${formatPrice(s.tp1)}</strong></div>
+      <div class="fs-row"><span>الهدف الثاني</span><strong style="color:var(--bull)">${formatPrice(s.tp2)}</strong></div>
+      <div class="fs-row"><span>نسبة الثقة عند الإصدار</span><strong>${s.confidence}%</strong></div>
+      <div class="fs-row"><span>السعر الحالي</span><strong>${formatPrice(livePrice)}</strong></div>`;
+    return;
+  }
+
+  if(openSignals.length > 1){
+    const buys = openSignals.filter(s => s.direction === 'buy').length;
+    const sells = openSignals.filter(s => s.direction === 'sell').length;
+    card.className = 'final-summary-card fs-buy';
+    icon.textContent = '📌';
+    headline.textContent = `لديك ${openSignals.length} توصيات ثابتة نشطة (${buys} شراء، ${sells} بيع)`;
+    details.innerHTML = `<div class="fs-row"><span>التفاصيل</span><strong>راجع البطاقات تحت في "التوصيات الثابتة"</strong></div>`;
     return;
   }
 
   card.className = 'final-summary-card fs-wait';
   icon.textContent = '🟡';
-  headline.textContent = 'انتظار — لا توجد فرصة دخول مؤهلة الآن';
+  headline.textContent = 'انتظار — لا توجد توصية ثابتة نشطة الآن';
   const closestBias = rec.score > 0 ? 'شراء' : rec.score < 0 ? 'بيع' : 'محايد';
   details.innerHTML = `<div class="fs-row"><span>السعر الحالي</span><strong>${formatPrice(livePrice)}</strong></div>
     <div class="fs-row"><span>الميل الحالي الأقرب</span><strong>${closestBias}</strong></div>
@@ -2060,8 +2178,8 @@ function renderAll({ asset, livePrice, changePercent, sourceLabel, candles, rsi,
   renderFinalSummary(rec, livePrice);
 
   renderReasons(rec.reasons);
-  if(renderLevels) renderTradeLevels(rec.levels, rec.confidence);
-  else updateRiskCalculator();
+  renderSignalCards();
+  updateRiskCalculator();
 
   if(rsi != null){
     $('rsiValue').textContent = rsi.toFixed(1);
@@ -2851,7 +2969,12 @@ async function loadAsset(asset, fullAnalysis = true){
       rec.reasons = [{ bias: 'neutral', text: '🔒 السوق مغلق حاليًا (عطلة نهاية الأسبوع) — التحليل معروض للدراسة فقط ولن تظهر توصية دخول فعلية حتى إعادة فتح السوق.' }, ...rec.reasons];
     }
 
+    // check every locked signal against the current price on EVERY refresh (full or price-only)
+    updateSignalStatuses(livePrice);
+
     if(fullAnalysis){
+      // a qualifying setup becomes its own new locked card — it never overwrites an existing one
+      if(!marketStatus.isClosed) addSignalIfNew(rec);
       // freeze everything tied to the decision so it stays stable until the user re-analyzes
       state.frozenLevels.gold = rec.levels;
       state.frozenAnalysisTime.gold = Date.now();
@@ -3062,11 +3185,11 @@ async function runBacktestUI(){
 function updateRiskCalculator(){
   const out = $('riskOutput');
   if(!out) return;
-  const levels = state.frozenLevels.gold;
+  const levels = state.signals.find(s => s.status === 'open');
   const balance = parseFloat($('riskBalance').value) || 0;
   const riskPct = parseFloat($('riskPct').value) || 0;
   if(!levels || balance <= 0 || riskPct <= 0){
-    out.innerHTML = 'فعّل تحليلاً (توصية دخول فعلية) وأدخل رصيد الحساب ونسبة المخاطرة لعرض حجم اللوت المقترح.';
+    out.innerHTML = 'لما تظهر توصية ثابتة نشطة، وتدخل رصيد الحساب ونسبة المخاطرة، هيظهر هنا حجم اللوت المقترح (بناءً على أحدث توصية نشطة).';
     return;
   }
   const riskAmount = balance * (riskPct / 100);
@@ -3235,6 +3358,8 @@ function init(){
   const loader = document.getElementById('initLoader');
   if(loader) loader.style.display='none';
   $('buildStamp').textContent = APP_BUILD;
+  state.signals = loadSignals();
+  renderSignalCards();
 
   $('settingsBtn').addEventListener('click', openSettings);
   $('closeSettings').addEventListener('click', closeSettings);
