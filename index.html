@@ -179,6 +179,26 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 }
 .should-enter-btn:active{ transform: scale(.97); }
 
+/* ---------- final summary card (plain-language verdict, always visible) ---------- */
+.final-summary-card{
+  border-radius: var(--radius-lg); padding:16px 18px; margin-bottom:14px;
+  border:2px solid var(--border); background: var(--surface);
+}
+.fs-top{ display:flex; align-items:center; gap:10px; margin-bottom:4px; }
+.fs-icon{ font-size:26px; line-height:1; }
+.fs-headline{ font-weight:800; font-size:17px; }
+.fs-details{ font-size:13px; line-height:1.9; color: var(--text); margin-top:8px; }
+.fs-details .fs-row{ display:flex; justify-content:space-between; padding:2px 0; }
+.fs-details .fs-row strong{ font-family: var(--font-mono); }
+.final-summary-card.fs-buy{ border-color: var(--bull); background: linear-gradient(160deg, rgba(0,229,160,.12), var(--surface)); box-shadow: 0 0 20px rgba(0,229,160,.12); }
+.final-summary-card.fs-buy .fs-headline{ color: var(--bull); }
+.final-summary-card.fs-sell{ border-color: var(--bear); background: linear-gradient(160deg, rgba(255,77,94,.12), var(--surface)); box-shadow: 0 0 20px rgba(255,77,94,.12); }
+.final-summary-card.fs-sell .fs-headline{ color: var(--bear); }
+.final-summary-card.fs-wait{ border-color: var(--gold); }
+.final-summary-card.fs-wait .fs-headline{ color: var(--gold-glow); }
+.final-summary-card.fs-closed{ border-color: var(--text-dim); opacity:.9; }
+.final-summary-card.fs-closed .fs-headline{ color: var(--text-dim); }
+
 .verdict-banner{
   border-radius: var(--radius-lg); padding:14px 16px; margin-bottom:14px;
   border:1px solid var(--border); background: var(--surface-2);
@@ -633,6 +653,14 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
       <button id="shouldEnterBtn" class="should-enter-btn" type="button">🎯 هل أدخل الصفقة الآن؟</button>
     </section>
 
+    <section id="finalSummaryCard" class="final-summary-card fs-wait">
+      <div class="fs-top">
+        <span id="fsIcon" class="fs-icon">🟡</span>
+        <span id="fsHeadline" class="fs-headline">جارٍ التحليل…</span>
+      </div>
+      <div id="fsDetails" class="fs-details"></div>
+    </section>
+
     <div id="verdictBanner" class="verdict-banner hidden">
       <div class="verdict-top">
         <span id="verdictIcon" class="verdict-icon">—</span>
@@ -909,7 +937,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-05-01'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-05-02'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1681,31 +1709,40 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
   confidence = Math.max(30, Math.min(92, confidence));
 
   // -------- quality gate: a recommendation is only issued once enough confluence exists --------
-  const MIN_VOTES_FOR_TRADE = 3;
+  // NOTE: these were originally tighter (3 votes / 55% confidence / hard MTF block), but that
+  // combination compounded into an almost-permanent "wait" state in real testing — three straight
+  // days without a single qualifying signal. Loosened here to something that still filters out
+  // weak setups without effectively disabling the feature.
+  const MIN_VOTES_FOR_TRADE = 2;
   const MIN_SCORE_FOR_TRADE = 2;
-  const MIN_CONFIDENCE_FOR_TRADE = 55;
+  const MIN_CONFIDENCE_FOR_TRADE = 45;
 
-  // Multi-timeframe hard gate: one of the most consistently cited edges in trading is
-  // never fighting the higher-timeframe trend. If the 4H trend directly contradicts the
-  // H1 signal, the trade is blocked regardless of how good the H1 confluence looks.
+  // Multi-timeframe check: softened from a hard block to a confidence penalty. Fighting the
+  // higher-timeframe trend is still riskier, but the 4H trend disagreeing with an H1 signal
+  // is common and normal — it shouldn't single-handedly veto every trade.
   const htfConflict = htfTrend && htfTrend.trend !== 'neutral' && (
     (score > 0 && htfTrend.trend === 'down') || (score < 0 && htfTrend.trend === 'up')
   );
   if(htfConflict){
-    reasons.unshift({ bias: 'neutral', text: `⛔ تعارض مع الفريم الأعلى (4 ساعات): الاتجاه العام هناك ${htfTrend.trend === 'up' ? 'صاعد' : 'هابط'} بينما إشارة الساعة الحالية ${score > 0 ? 'شراء' : 'بيع'} — تم حجب التوصية حتى يزول التعارض.` });
+    confidence -= 15;
+    reasons.unshift({ bias: 'neutral', text: `⚠️ تعارض مع الفريم الأعلى (4 ساعات): الاتجاه العام هناك ${htfTrend.trend === 'up' ? 'صاعد' : 'هابط'} بينما إشارة الساعة الحالية ${score > 0 ? 'شراء' : 'بيع'} — تم تخفيض الثقة نتيجة هذا التعارض.` });
   } else if(htfTrend && htfTrend.trend !== 'neutral'){
     reasons.push({ bias: 'neutral', text: `✅ توافق مع الفريم الأعلى (4 ساعات): الاتجاه العام هناك ${htfTrend.trend === 'up' ? 'صاعد' : 'هابط'}، متوافق مع اتجاه الإشارة الحالية.` });
   }
+  confidence = Math.max(20, Math.min(92, confidence));
 
-  const qualifies = !htfConflict
-    && directionalVotes.length >= MIN_VOTES_FOR_TRADE
+  const qualifies = directionalVotes.length >= MIN_VOTES_FOR_TRADE
     && Math.abs(score) >= MIN_SCORE_FOR_TRADE
     && confidence >= MIN_CONFIDENCE_FOR_TRADE;
 
   let trafficLight;
   if(!qualifies){
     trafficLight = { key: 'wait', emoji: '🟡', text: 'انتظار' };
-    reasons.unshift({ bias: 'neutral', text: `⏳ لم تكتمل شروط الجودة الكافية لإصدار توصية دخول (يلزم توافق ${MIN_VOTES_FOR_TRADE} عوامل على الأقل بثقة ≥ ${MIN_CONFIDENCE_FOR_TRADE}%). الوضع الحالي: انتظار الفرصة الأوضح.` });
+    const missing = [];
+    if(directionalVotes.length < MIN_VOTES_FOR_TRADE) missing.push(`عدد العوامل (${directionalVotes.length}/${MIN_VOTES_FOR_TRADE})`);
+    if(Math.abs(score) < MIN_SCORE_FOR_TRADE) missing.push(`قوة الاتجاه (${score}/±${MIN_SCORE_FOR_TRADE})`);
+    if(confidence < MIN_CONFIDENCE_FOR_TRADE) missing.push(`نسبة الثقة (${confidence}%/${MIN_CONFIDENCE_FOR_TRADE}%)`);
+    reasons.unshift({ bias: 'neutral', text: `⏳ لم تكتمل شروط الدخول بعد — الناقص تحديدًا: ${missing.join('، ')}. أقرب اتجاه مرشّح حاليًا: ${score > 0 ? 'شراء' : score < 0 ? 'بيع' : 'لا يوجد ميل واضح'}.` });
   } else if(score > 0){
     trafficLight = { key: 'buy', emoji: '🟢', text: score >= 4 ? 'شراء قوي' : 'شراء' };
   } else {
@@ -1958,6 +1995,42 @@ const CANDLE_DESC_MAP = {
   'دوجي (تردد)': 'توازن بين المشترين والبائعين — انتظر التأكيد.',
 };
 
+function renderFinalSummary(rec, livePrice){
+  const card = $('finalSummaryCard');
+  const icon = $('fsIcon');
+  const headline = $('fsHeadline');
+  const details = $('fsDetails');
+
+  if(rec.marketClosed){
+    card.className = 'final-summary-card fs-closed';
+    icon.textContent = '🔒';
+    headline.textContent = 'السوق مغلق — لا توجد صفقات الآن';
+    details.innerHTML = `<div class="fs-row"><span>الحالة</span><strong>انتظر إعادة فتح السوق قبل اتخاذ أي قرار</strong></div>`;
+    return;
+  }
+
+  if(rec.levels){
+    const isBuy = rec.levels.direction === 'buy';
+    card.className = 'final-summary-card ' + (isBuy ? 'fs-buy' : 'fs-sell');
+    icon.textContent = isBuy ? '🟢' : '🔴';
+    headline.textContent = `${isBuy ? 'اشترِ' : 'بِع'} من نقطة ${formatPrice(rec.levels.entry)}`;
+    details.innerHTML = `
+      <div class="fs-row"><span>وقف الخسارة</span><strong style="color:var(--bear)">${formatPrice(rec.levels.stop)}</strong></div>
+      <div class="fs-row"><span>الهدف الأول</span><strong style="color:var(--bull)">${formatPrice(rec.levels.tp1)}</strong></div>
+      <div class="fs-row"><span>الهدف الثاني</span><strong style="color:var(--bull)">${formatPrice(rec.levels.tp2)}</strong></div>
+      <div class="fs-row"><span>نسبة الثقة</span><strong>${rec.confidence}%</strong></div>`;
+    return;
+  }
+
+  card.className = 'final-summary-card fs-wait';
+  icon.textContent = '🟡';
+  headline.textContent = 'انتظار — لا توجد فرصة دخول مؤهلة الآن';
+  const closestBias = rec.score > 0 ? 'شراء' : rec.score < 0 ? 'بيع' : 'محايد';
+  details.innerHTML = `<div class="fs-row"><span>السعر الحالي</span><strong>${formatPrice(livePrice)}</strong></div>
+    <div class="fs-row"><span>الميل الحالي الأقرب</span><strong>${closestBias}</strong></div>
+    <div class="fs-row"><span>الخطوة التالية</span><strong>راجع "سبب التوصية" تحت لمعرفة الناقص بالضبط</strong></div>`;
+}
+
 function renderAll({ asset, livePrice, changePercent, sourceLabel, candles, rsi, macd, fib, sr, ema, atr, boll, vwap, candlePattern, chartPattern, structure, orderBlocks, fvg, divergence, regime, htfTrend, rec, renderLevels = true }){
   const accent = ACCENT.gold;
 
@@ -1983,6 +2056,8 @@ function renderAll({ asset, livePrice, changePercent, sourceLabel, candles, rsi,
     $('tlDot').textContent = rec.trafficLight.emoji;
     $('tlText').textContent = rec.trafficLight.text + (rec.confidence != null ? ` — ثقة ${rec.confidence}%` : '');
   }
+
+  renderFinalSummary(rec, livePrice);
 
   renderReasons(rec.reasons);
   if(renderLevels) renderTradeLevels(rec.levels, rec.confidence);
