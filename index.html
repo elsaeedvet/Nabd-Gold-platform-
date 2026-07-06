@@ -2,105 +2,14 @@
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#0A0D14">
-<title>نبض | منصة تداول الذهب الاحترافية</title>
-
 <script>
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.getRegistrations().then(function(registrations) {
-      for(let registration of registrations) {
-        registration.unregister();
-      }
+    navigator.serviceWorker.getRegistrations().then(registrations => {
+      for(let registration of registrations) { registration.unregister(); }
     });
   }
 </script>
-
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0A0D14">
+<title>نبض | منصة تداول الذهب الاحترافية</title>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-<style>
-:root{
-  --bg: #0A0D14;
-  --surface: #141B26;
-  --surface-2: #1D2836;
-  --border: #2A3646;
-  --text: #F3F1EA;
-  --text-dim: #93A0B4;
-  --gold: #F0B90B;
-  --gold-glow: #FFD84D;
-  --bull: #00E5A0;
-  --bear: #FF4D5E;
-  --radius-lg: 18px;
-  --radius-md: 12px;
-}
-*{ box-sizing: border-box; }
-html, body{ margin:0; padding:0; background: var(--bg); color: var(--text); font-family: sans-serif; }
-#app{ max-width: 560px; margin: 0 auto; padding: 20px; }
-.topbar{ display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; }
-.price-hero{ background: var(--surface); border:1px solid var(--border); padding:20px; border-radius: var(--radius-lg); }
-.price-value{ font-size: 32px; font-weight:bold; }
-.should-enter-btn{ width:100%; background: var(--gold); color:#000; border:none; padding:15px; border-radius:12px; font-weight:bold; cursor:pointer; margin-top:20px; }
-.hidden{ display:none; }
-</style>
-</head>
-<body>
-
-<div id="app">
-  <header class="topbar">
-    <h1>نبض 📈</h1>
-    <button id="settingsBtn">⚙️</button>
-  </header>
-
-  <main>
-    <section class="price-hero">
-      <div id="priceValue" style="font-family: monospace;">جاري الاتصال...</div>
-      <div id="tv_chart" style="height: 300px; width: 100%; margin-top: 15px;"></div>
-    </section>
-
-    <button id="shouldEnterBtn" class="should-enter-btn">تحديث البيانات الآن</button>
-  </main>
-</div>
-
-<script>
-'use strict';
-
-const state = {
-  goldSource: localStorage.getItem('nabd_goldSource') || 'twelvedata',
-  apiKey: localStorage.getItem('nabd_twelveDataKey') || '',
-};
-
-function $(id){ return document.getElementById(id); }
-
-async function loadData() {
-  $('priceValue').textContent = "جارٍ جلب البيانات...";
-  try {
-    // محاولة الاتصال بـ TwelveData إذا كان موجوداً
-    if(state.goldSource === 'twelvedata' && state.apiKey) {
-      const res = await fetch(`https://api.twelvedata.com/quote?symbol=XAU/USD&apikey=${state.apiKey}`);
-      const d = await res.json();
-      if(d.close) {
-        $('priceValue').textContent = "السعر الحالي: " + parseFloat(d.close).toFixed(2);
-      } else {
-        $('priceValue').textContent = "خطأ في مفتاح الـ API";
-      }
-    } else {
-      $('priceValue').textContent = "الرجاء ضبط الإعدادات واختيار TwelveData";
-    }
-  } catch(e) {
-    $('priceValue').textContent = "خطأ في الاتصال: " + e.message;
-  }
-}
-
-function init() {
-  new TradingView.widget({
-    "autosize": true, "symbol": "OANDA:XAUUSD", "interval": "60",
-    "theme": "dark", "container_id": "tv_chart"
-  });
-
-  $('shouldEnterBtn').addEventListener('click', loadData);
-  loadData();
-}
-
-document.addEventListener('DOMContentLoaded', init);
-</script>
-</body>
-</html>
