@@ -2,10 +2,7 @@
 <html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-    <title>نبض | منصة الذهب</title>
-    
-    <!-- كود تنظيف الكاش لضمان تحديث الموقع -->
+    <!-- كود إجباري لتحديث الموقع وتجاوز الكاش -->
     <script>
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.getRegistrations().then(registrations => {
@@ -13,27 +10,37 @@
             });
         }
     </script>
-
+    
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#0A0D14">
+    <title>نبض | منصة تداول الذهب</title>
+    
+    <!-- مكتبة TradingView -->
     <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+
     <style>
-        body { margin: 0; background: #0A0D14; color: #fff; font-family: sans-serif; }
-        .container { padding: 15px; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-        .settings-btn { background: none; border: 1px solid #2A3646; padding: 8px; border-radius: 8px; cursor: pointer; color: white; }
-        #tv_chart_container { height: 350px; border: 1px solid #2A3646; border-radius: 12px; overflow: hidden; }
-        .btn-update { width: 100%; padding: 15px; background: #F0B90B; border: none; border-radius: 12px; margin-top: 20px; font-weight: bold; cursor: pointer; }
+        :root { --bg: #0A0D14; --gold: #F0B90B; --border: #2A3646; }
+        body { margin: 0; background: var(--bg); color: #fff; font-family: sans-serif; }
+        .app-container { max-width: 560px; margin: 0 auto; padding: 15px; }
+        .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .settings-btn { background: var(--border); border: none; padding: 10px 15px; border-radius: 8px; color: white; cursor: pointer; }
+        #tv_chart_container { height: 350px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+        .action-btn { width: 100%; padding: 15px; background: var(--gold); border: none; border-radius: 12px; font-weight: bold; margin-top: 20px; cursor: pointer; }
     </style>
 </head>
 <body>
 
-<div class="container">
-    <div class="header">
+<div class="app-container">
+    <header class="topbar">
         <h1>نبض 📈</h1>
-        <button class="settings-btn" onclick="alert('فتح الإعدادات...')">⚙️</button>
-    </div>
+        <!-- زر الإعدادات -->
+        <button class="settings-btn" onclick="openSettings()">⚙️ إعدادات</button>
+    </header>
 
-    <div id="tv_chart_container"></div>
-    <button class="btn-update" onclick="location.reload()">تحديث البيانات</button>
+    <main>
+        <div id="tv_chart_container"></div>
+        <button class="action-btn" onclick="location.reload()">تحديث البيانات</button>
+    </main>
 </div>
 
 <script>
@@ -47,6 +54,12 @@
         "style": "1",
         "locale": "ar"
     });
+
+    // وظيفة زر الإعدادات
+    function openSettings() {
+        alert("جارٍ فتح لوحة الإعدادات...");
+        // يمكنك هنا ربط دالة الإعدادات الخاصة بك
+    }
 </script>
 
 </body>
