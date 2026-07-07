@@ -127,6 +127,49 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 .price-source{ font-size:11px; color: var(--text-dim); }
 .price-updated{ font-size:11px; color: var(--text-dim); font-family: var(--font-mono); }
 .price-chart{ width:100%; height:120px; display:block; }
+.chart-stack{ position:relative; width:100%; height:170px; }
+.chart-stack .price-chart{ position:absolute; inset:0; height:170px; }
+.tv-widget-host{ position:absolute; inset:0; border-radius:10px; overflow:hidden; background:var(--surface-2); }
+.tv-widget-host.hidden{ display:none; }
+.tv-widget-host iframe{ width:100%!important; height:100%!important; }
+.chart-mode-row{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 2px 4px; }
+.chart-mode-label{ font-size:10.5px; color: var(--text-dim); }
+.chart-mode-toggle{
+  background:none; border:1px solid var(--border); color: var(--text-dim);
+  font-size:10.5px; padding:5px 10px; border-radius:20px; cursor:pointer; transition:.15s;
+}
+.chart-mode-toggle:hover{ color: var(--gold-glow); border-color: var(--gold); }
+.chart-mode-toggle.active{ color:#0A0D14; background: var(--gold); border-color: var(--gold); font-weight:700; }
+
+/* ---------- indicator settings grid ---------- */
+.indicator-settings-grid{ display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; }
+.indicator-field{ display:flex; flex-direction:column; gap:3px; font-size:10.5px; color: var(--text-dim); }
+.indicator-field input{
+  background: var(--surface-2); border:1px solid var(--border); color: var(--text);
+  border-radius:8px; padding:7px 6px; font-family: var(--font-mono); font-size:13px;
+  text-align:center; width:100%;
+}
+.indicator-field input:focus{ outline:none; border-color: var(--gold); }
+
+/* ---------- live trade-management advisory ---------- */
+.signal-advisory{
+  margin-top:10px; padding:10px 12px; border-radius:10px; border:1px solid var(--border);
+  display:flex; flex-direction:column; gap:4px; animation: advisory-pulse 2.6s ease-in-out infinite;
+}
+.signal-advisory-title{ font-size:12.5px; font-weight:800; }
+.signal-advisory-text{ font-size:11.5px; color: var(--text); line-height:1.6; }
+.signal-advisory.adv-lock{ background: rgba(240,185,11,.10); border-color: var(--gold); }
+.signal-advisory.adv-lock .signal-advisory-title{ color: var(--gold-glow); }
+.signal-advisory.adv-exit{ background: rgba(255,77,94,.08); border-color: var(--bear); }
+.signal-advisory.adv-exit .signal-advisory-title{ color: var(--bear); }
+.signal-advisory.adv-hedge{ background: rgba(167,139,250,.10); border-color: var(--purple); }
+.signal-advisory.adv-hedge .signal-advisory-title{ color: var(--purple); }
+.signal-advisory.adv-reinforce{ background: rgba(0,229,160,.08); border-color: var(--bull); }
+.signal-advisory.adv-reinforce .signal-advisory-title{ color: var(--bull); }
+@keyframes advisory-pulse{
+  0%, 100%{ box-shadow: 0 0 0 rgba(240,185,11,0); }
+  50%{ box-shadow: 0 0 10px rgba(240,185,11,.18); }
+}
 
 /* ---------- market sessions ---------- */
 .sessions-card{
@@ -668,7 +711,14 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
           <span id="priceUpdated" class="price-updated">—</span>
         </div>
       </div>
-      <canvas id="priceChart" class="price-chart"></canvas>
+      <div id="chartStack" class="chart-stack">
+        <canvas id="priceChart" class="price-chart"></canvas>
+        <div id="tvWidgetHost" class="tv-widget-host hidden"></div>
+      </div>
+      <div id="chartModeRow" class="chart-mode-row">
+        <span id="chartModeLabel" class="chart-mode-label">📊 الشارت الداخلي (يعمل دائمًا)</span>
+        <button id="chartModeToggle" class="chart-mode-toggle" type="button">تجربة TradingView المباشر</button>
+      </div>
     </section>
 
     <section class="sessions-card">
@@ -923,6 +973,22 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
       </div>
     </div>
 
+    <div class="setting-group">
+      <label class="setting-label">مدخلات المؤشرات الفنية (متقدم)</label>
+      <div class="indicator-settings-grid">
+        <label class="indicator-field"><span>فترة RSI</span><input type="number" id="setRsiPeriod" min="2" max="50"></label>
+        <label class="indicator-field"><span>EMA سريع</span><input type="number" id="setEmaFast" min="2" max="100"></label>
+        <label class="indicator-field"><span>EMA متوسط</span><input type="number" id="setEmaMid" min="5" max="150"></label>
+        <label class="indicator-field"><span>EMA بطيء</span><input type="number" id="setEmaSlow" min="20" max="400"></label>
+        <label class="indicator-field"><span>MACD سريع</span><input type="number" id="setMacdFast" min="2" max="50"></label>
+        <label class="indicator-field"><span>MACD بطيء</span><input type="number" id="setMacdSlow" min="5" max="100"></label>
+        <label class="indicator-field"><span>MACD إشارة</span><input type="number" id="setMacdSignal" min="2" max="50"></label>
+        <label class="indicator-field"><span>فترة بولينجر</span><input type="number" id="setBollPeriod" min="5" max="100"></label>
+        <label class="indicator-field"><span>انحراف بولينجر (×)</span><input type="number" id="setBollMult" min="1" max="4" step="0.1"></label>
+      </div>
+      <button id="resetIndicatorDefaults" class="ghost-btn" type="button" style="margin-top:8px;font-size:11px;padding:8px;">↺ استعادة القيم الافتراضية</button>
+    </div>
+
     <div class="modal-actions">
       <button id="saveSettings" class="primary-btn" type="button">حفظ</button>
       <button id="closeSettings" class="ghost-btn" type="button">إغلاق</button>
@@ -938,7 +1004,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-05-03'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-07-01'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -962,7 +1028,20 @@ const state = {
   lastCalendarFetchAt: null,
   signals: [],
   loading: false,
+  chartMode: localStorage.getItem('nabd_chartMode') || 'internal',
+  indicatorSettings: (() => {
+    const defaults = { rsiPeriod: 14, emaFast: 20, emaMid: 50, emaSlow: 200, macdFast: 12, macdSlow: 26, macdSignal: 9, bollPeriod: 20, bollMult: 2 };
+    try{
+      const raw = localStorage.getItem('nabd_indicatorSettings');
+      return raw ? { ...defaults, ...JSON.parse(raw) } : defaults;
+    }catch(e){ return defaults; }
+  })(),
 };
+
+function saveIndicatorSettings(){
+  try{ localStorage.setItem('nabd_indicatorSettings', JSON.stringify(state.indicatorSettings)); }
+  catch(e){ /* ignore storage errors */ }
+}
 
 const SYMBOLS = { goldPaxg: 'PAXGUSDT' };
 
@@ -1039,6 +1118,74 @@ function dismissSignal(id){
   state.signals = state.signals.filter(s => s.id !== id);
   saveSignals();
   renderSignalCards();
+}
+
+/* ===================== Live trade-management "robot" ===================== */
+// For every OPEN signal, on every refresh, re-check the CURRENT indicator picture (not just
+// the frozen one from entry time) against the trade's direction. This is what turns a static
+// "توصية" into an ongoing "متابعة" — it never places or closes a real trade by itself (this
+// is informational software, not a broker), it only surfaces the same kind of judgment calls
+// a disciplined trader would make: lock partial profit, tighten the stop, reinforce a working
+// trade, or hedge/cool down one that's turning against you — with a plain-language reason.
+const ADVISORY_LABEL = {
+  lock_profit: { text: 'يُنصح بحجز أرباح', cls: 'adv-lock',    icon: '🟡' },
+  exit_early:  { text: 'تحذير: ضعف في الزخم', cls: 'adv-exit', icon: '⚠️' },
+  hedge:       { text: 'فكر في هيدج (تبريد)', cls: 'adv-hedge', icon: '🛡️' },
+  reinforce:   { text: 'الاتجاه لا يزال قويًا', cls: 'adv-reinforce', icon: '💪' },
+};
+
+function computeSignalAdvisory(s, ctx){
+  const { rsiVal, macd, structure, divergence, price, regime } = ctx;
+  if(!macd || macd.histogram.length < 2) return null;
+  const hist = macd.histogram;
+  const lastHist = hist[hist.length - 1];
+  const prevHist = hist[hist.length - 2];
+  const histFalling = lastHist < prevHist;
+  const histRising = lastHist > prevHist;
+  const isBuy = s.direction === 'buy';
+
+  const inProfit = isBuy ? price > s.entry : price < s.entry;
+  const stopDist = Math.abs(s.entry - s.stop) || 1;
+  const distToStop = isBuy ? (price - s.stop) : (s.stop - price);
+  const nearStop = !inProfit && (distToStop / stopDist) < 0.35;
+
+  const trendAgainst = structure && structure.trend && (
+    (isBuy && structure.trend === 'down') || (!isBuy && structure.trend === 'up')
+  );
+  const divAgainst = divergence && (
+    (isBuy && divergence.type === 'bearish') || (!isBuy && divergence.type === 'bullish')
+  );
+  const momentumAgainst = isBuy ? (lastHist < 0 && histFalling) : (lastHist > 0 && histRising);
+  const momentumWith    = isBuy ? (lastHist > 0 && histRising) : (lastHist < 0 && histFalling);
+  const rsiExtremeAgainst = isBuy ? (rsiVal != null && rsiVal > 72) : (rsiVal != null && rsiVal < 28);
+
+  // Priority order matters: a structural break against you while in profit is the strongest,
+  // clearest signal to protect gains; a break against you near your stop is when hedging (not
+  // yet stopped out) becomes worth considering; then divergence/momentum-only warnings; then,
+  // only when everything still agrees with the trade, a reinforcement note.
+  if(trendAgainst && inProfit){
+    return { type: 'lock_profit', text: 'انعكس اتجاه هيكل السوق (Market Structure) ضد اتجاه صفقتك بينما أنت في ربح — فكر في إغلاق جزء من الصفقة أو نقل الوقف لنقطة الدخول لتأمين المكسب.' };
+  }
+  if(trendAgainst && nearStop){
+    return { type: 'hedge', text: 'السعر يقترب من مستوى الوقف وهيكل السوق انعكس ضدك — يمكن التفكير في هيدج (صفقة معاكسة صغيرة لتبريد التعرض) أو إغلاق الصفقة يدويًا بدل انتظار ضرب الوقف مباشرة.' };
+  }
+  if((divAgainst || rsiExtremeAgainst) && inProfit){
+    return { type: 'lock_profit', text: `${divAgainst ? 'ظهر انحراف (Divergence) بين السعر والزخم مخالف لاتجاه صفقتك' : 'مؤشر RSI دخل منطقة تشبع مضاد لاتجاه صفقتك'} وأنت في ربح — يُفضّل تأمين جزء من الأرباح الآن بدل انتظار الهدف النهائي.` };
+  }
+  if(momentumAgainst && !trendAgainst){
+    return { type: 'exit_early', text: 'بدأ الزخم (MACD) يتراجع في اتجاه معاكس لصفقتك رغم أن الهيكل العام لم ينعكس بعد — راقب عن قرب، وفكر في خروج مبكر جزئي إذا استمر الضعف عدة شمعات.' };
+  }
+  if(momentumWith && !trendAgainst && regime && regime.regime === 'trend'){
+    return { type: 'reinforce', text: 'الزخم والهيكل العام لا يزالان يدعمان اتجاه صفقتك بوضوح في سوق ذي اتجاه واضح — قد تفكر في تعزيز الصفقة عند أي ارتداد بسيط بدل الاكتفاء بالحجم الحالي.' };
+  }
+  return null;
+}
+
+function updateSignalAdvisories(ctx){
+  state.signals.forEach(s => {
+    if(s.status !== 'open') { s.advisory = null; return; }
+    s.advisory = computeSignalAdvisory(s, ctx);
+  });
 }
 
 /* ===================== Helpers ===================== */
@@ -1225,12 +1372,12 @@ function computeEMA(values, period){
   return out;
 }
 
-function computeMACD(closes){
-  if(closes.length < 35) return null;
-  const ema12 = computeEMA(closes, 12);
-  const ema26 = computeEMA(closes, 26);
-  const macdLine = closes.map((_, i) => ema12[i] - ema26[i]);
-  const signalLine = computeEMA(macdLine, 9);
+function computeMACD(closes, fastPeriod = 12, slowPeriod = 26, signalPeriod = 9){
+  if(closes.length < slowPeriod + signalPeriod) return null;
+  const emaFast = computeEMA(closes, fastPeriod);
+  const emaSlow = computeEMA(closes, slowPeriod);
+  const macdLine = closes.map((_, i) => emaFast[i] - emaSlow[i]);
+  const signalLine = computeEMA(macdLine, signalPeriod);
   const histogram = macdLine.map((v, i) => v - signalLine[i]);
   return { macdLine, signalLine, histogram };
 }
@@ -1273,11 +1420,11 @@ function computeVWAP(candles, lookback = 24){
   return { value: sumV ? sumPV / sumV : slice[slice.length - 1].close, approx: false };
 }
 
-function computeEMAs(closes){
+function computeEMAs(closes, fastP = 20, midP = 50, slowP = 200){
   return {
-    ema20: computeEMA(closes, 20).at(-1),
-    ema50: closes.length >= 50 ? computeEMA(closes, 50).at(-1) : null,
-    ema200: closes.length >= 200 ? computeEMA(closes, 200).at(-1) : null,
+    ema20: computeEMA(closes, fastP).at(-1),
+    ema50: closes.length >= midP ? computeEMA(closes, midP).at(-1) : null,
+    ema200: closes.length >= slowP ? computeEMA(closes, slowP).at(-1) : null,
   };
 }
 
@@ -1906,46 +2053,129 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
 
 /* ===================== Rendering ===================== */
 
+// Real candlestick renderer — this is our own always-available "live chart" that never
+// depends on any third-party widget (TradingView or otherwise). Even if a TradingView
+// embed is enabled and fails to load (blocked network, offline, rate-limited), this is
+// what the user sees underneath, so the chart is never blank.
 function drawLineChart(canvasId, candles, accentColor){
   const canvas = $(canvasId);
   if(!canvas) return;
   const ctx = canvas.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
-  const w = rect.width, h = rect.height || 120;
+  const w = rect.width, h = rect.height || 170;
   canvas.width = w * dpr; canvas.height = h * dpr;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
-  const slice = candles.slice(-60);
+  const slice = candles.slice(-70);
   if(slice.length < 2) return;
-  const closes = slice.map(c => c.close);
-  const max = Math.max(...closes), min = Math.min(...closes);
+  const highs = slice.map(c => c.high), lows = slice.map(c => c.low);
+  const max = Math.max(...highs), min = Math.min(...lows);
   const range = (max - min) || 1;
-  const stepX = w / (slice.length - 1);
-  const yFor = v => h - ((v - min) / range) * h * 0.82 - h * 0.09;
+  const padTop = h * 0.08, padBottom = h * 0.1;
+  const usableH = h - padTop - padBottom;
+  const yFor = v => padTop + usableH - ((v - min) / range) * usableH;
+  const stepX = w / slice.length;
+  const bodyW = Math.max(1.5, stepX * 0.62);
 
+  // faint gradient area under the closing-price line for visual continuity with the old look
   const grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, accentColor + '4D');
+  grad.addColorStop(0, accentColor + '26');
   grad.addColorStop(1, accentColor + '00');
-
   ctx.beginPath();
   slice.forEach((c, i) => {
-    const x = i * stepX, y = yFor(c.close);
+    const x = i * stepX + stepX / 2, y = yFor(c.close);
     i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
   });
   ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
   ctx.fillStyle = grad; ctx.fill();
 
-  ctx.beginPath();
+  // candlesticks: wick + body, green for bullish close, red for bearish close
   slice.forEach((c, i) => {
-    const x = i * stepX, y = yFor(c.close);
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    const x = i * stepX + stepX / 2;
+    const isUp = c.close >= c.open;
+    const color = isUp ? '#00E5A0' : '#FF4D5E';
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, yFor(c.high));
+    ctx.lineTo(x, yFor(c.low));
+    ctx.stroke();
+    const yOpen = yFor(c.open), yClose = yFor(c.close);
+    const top = Math.min(yOpen, yClose);
+    const bh = Math.max(1, Math.abs(yClose - yOpen));
+    ctx.fillRect(x - bodyW / 2, top, bodyW, bh);
   });
-  ctx.strokeStyle = accentColor;
-  ctx.lineWidth = 2;
-  ctx.lineJoin = 'round';
-  ctx.stroke();
+}
+
+/* ===================== Optional TradingView live widget (with automatic fallback) ===================== */
+// The internal candlestick canvas above is ALWAYS the source of truth and always renders
+// from the same live data the recommendation engine uses. TradingView is purely an optional
+// cosmetic overlay some users like to see — if it's blocked, slow, or the script fails to
+// load (common on some ISPs/regions), we automatically fall back to the internal chart so
+// the user is never left staring at a blank space.
+const TV_FALLBACK_MS = 6000;
+let _tvFallbackTimer = null;
+
+function setChartMode(mode){
+  state.chartMode = mode;
+  localStorage.setItem('nabd_chartMode', mode);
+  const host = $('tvWidgetHost');
+  const toggle = $('chartModeToggle');
+  const label = $('chartModeLabel');
+  clearTimeout(_tvFallbackTimer);
+
+  if(mode === 'tradingview'){
+    toggle.textContent = '↩️ العودة للشارت الداخلي';
+    toggle.classList.add('active');
+    label.textContent = '⏳ جارٍ تحميل TradingView المباشر…';
+    host.classList.remove('hidden');
+    host.innerHTML = '';
+    try{
+      const script = document.createElement('script');
+      script.type = 'text/javascript';
+      script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
+      script.async = true;
+      script.innerHTML = JSON.stringify({
+        autosize: true, symbol: 'OANDA:XAUUSD', interval: '60', timezone: 'Etc/UTC',
+        theme: 'dark', style: '1', locale: 'ar', hide_top_toolbar: true, hide_legend: true,
+        save_image: false, backgroundColor: '#141B26',
+      });
+      script.onerror = () => fallbackToInternalChart('تعذر تحميل TradingView (قد يكون محجوبًا في شبكتك) — تم التبديل تلقائيًا للشارت الداخلي.');
+      host.appendChild(script);
+      // TradingView's embed doesn't fire a reliable onload we can hook, so use a timeout:
+      // if the iframe hasn't appeared inside the host by then, assume it failed/blocked.
+      _tvFallbackTimer = setTimeout(() => {
+        if(!host.querySelector('iframe')){
+          fallbackToInternalChart('تعذر تحميل TradingView خلال الوقت المتوقع — تم التبديل تلقائيًا للشارت الداخلي.');
+        } else {
+          label.textContent = '📡 TradingView المباشر (الشارت الداخلي يعمل في الخلفية كنسخة احتياطية)';
+        }
+      }, TV_FALLBACK_MS);
+    }catch(e){
+      fallbackToInternalChart('تعذر تحميل TradingView — تم التبديل تلقائيًا للشارت الداخلي.');
+    }
+  } else {
+    toggle.textContent = 'تجربة TradingView المباشر';
+    toggle.classList.remove('active');
+    label.textContent = '📊 الشارت الداخلي (يعمل دائمًا حتى بدون إنترنت مستقر أو لو TradingView محجوب)';
+    host.classList.add('hidden');
+    host.innerHTML = '';
+  }
+}
+
+function fallbackToInternalChart(message){
+  state.chartMode = 'internal';
+  localStorage.setItem('nabd_chartMode', 'internal');
+  const host = $('tvWidgetHost');
+  host.classList.add('hidden');
+  host.innerHTML = '';
+  $('chartModeToggle').textContent = 'تجربة TradingView المباشر';
+  $('chartModeToggle').classList.remove('active');
+  $('chartModeLabel').textContent = '📊 الشارت الداخلي (يعمل دائمًا)';
+  if(message) showToast(message);
 }
 
 function drawMacdChart(macd){
@@ -2081,6 +2311,13 @@ function renderSignalCards(){
         <div class="trade-level-box tl-tp3"><span class="tl-label">هدف ٣</span><span class="tl-value">${formatPrice(s.tp3)}</span></div>
       </div>
       <ul class="signal-reasons">${s.reasons.slice(0, 3).map(r => `<li>${escapeHtml(r.text)}</li>`).join('')}</ul>
+      ${s.status === 'open' && s.advisory ? (() => {
+        const a = ADVISORY_LABEL[s.advisory.type];
+        return `<div class="signal-advisory ${a.cls}">
+          <span class="signal-advisory-title">${a.icon} ${a.text}</span>
+          <span class="signal-advisory-text">${escapeHtml(s.advisory.text)}</span>
+        </div>`;
+      })() : ''}
     `;
     card.querySelector('.signal-dismiss').addEventListener('click', () => dismissSignal(s.id));
     list.appendChild(card);
@@ -2519,8 +2756,12 @@ async function fetchFromForexFactory(){
       const text = await res.text();
       const all = JSON.parse(text); // throws cleanly if we got the "Request Denied" HTML page instead
       if(!Array.isArray(all)) throw new Error('unexpected response (rate-limited or blocked)');
+      // Previously this only kept impact === 'High', which on most days leaves just one or two
+      // events (or none) even though several genuinely market-moving USD releases happen at
+      // Medium impact (retail sales, PMIs, housing data, Fed speakers, etc). Keep both, and let
+      // the UI clearly label the impact level per-event instead of pretending everything is High.
       const events = all
-        .filter(e => e.country === 'USD' && e.impact === 'High')
+        .filter(e => e.country === 'USD' && (e.impact === 'High' || e.impact === 'Medium'))
         .map(e => ({ ...e, dateObj: new Date(e.date) }))
         .sort((a,b) => a.dateObj - b.dateObj);
       if(events.length) return events;
@@ -2548,7 +2789,7 @@ async function fetchFromTradingEconomics(){
       const raw = await res.json();
       if(!Array.isArray(raw)) throw new Error('TE unexpected response');
       const events = raw
-        .filter(e => e.Importance === 3) // highest impact only (3 bulls)
+        .filter(e => e.Importance === 3 || e.Importance === 2) // High + Medium impact (see note in fetchFromForexFactory)
         .map(normalizeTEEvent)
         .map(e => ({ ...e, dateObj: new Date(e.date) }))
         .sort((a,b) => a.dateObj - b.dateObj);
@@ -2635,8 +2876,8 @@ function getCountdownText(dateObj){
 }
 
 function impactBulls(impact){
-  // Since we only fetch 'High' impact USD events now, always show 3 bulls (max strength)
-  // Kept as a function in case medium/low ever get included again.
+  // We now fetch both High and Medium impact USD events, so this needs to actually
+  // differentiate them (previously always showed 3 bulls since only High was ever fetched).
   const level = impact === 'High' ? 3 : impact === 'Medium' ? 2 : 1;
   return '🐂'.repeat(level) + '🤍'.repeat(3 - level);
 }
@@ -2655,7 +2896,7 @@ function renderCalendar(events){
   const ul = $('calendarList');
   ul.innerHTML = '';
   if(!events.length){
-    ul.innerHTML = '<li class="news-loading">لا توجد أحداث عالية التأثير على الدولار هذا الأسبوع.</li>';
+    ul.innerHTML = '<li class="news-loading">لا توجد أحداث متوسطة أو عالية التأثير على الدولار هذا الأسبوع.</li>';
     return;
   }
 
@@ -2727,7 +2968,7 @@ function renderCalendar(events){
       </div>
       <div class="cal-bulls-row">
         <span class="cal-bulls">${impactBulls(ev.impact)}</span>
-        <span class="cal-bulls-label">أقصى تأثير على الدولار</span>
+        <span class="cal-bulls-label">${ev.impact === 'High' ? 'أقصى تأثير على الدولار' : 'تأثير متوسط على الدولار'}</span>
       </div>
       ${countdownHtml}
       <div class="cal-values">
@@ -2926,13 +3167,14 @@ async function loadAsset(asset, fullAnalysis = true){
 
     state.candles.gold = candles;
     const closes = candles.map(c => c.close);
-    const rsi = computeRSI(closes);
-    const macd = computeMACD(closes);
+    const iset = state.indicatorSettings;
+    const rsi = computeRSI(closes, iset.rsiPeriod);
+    const macd = computeMACD(closes, iset.macdFast, iset.macdSlow, iset.macdSignal);
     const fib = computeFibonacci(candles);
     const sr = computeSupportResistance(candles, livePrice);
-    const ema = computeEMAs(closes);
+    const ema = computeEMAs(closes, iset.emaFast, iset.emaMid, iset.emaSlow);
     const atr = computeATR(candles);
-    const boll = computeBollinger(closes);
+    const boll = computeBollinger(closes, iset.bollPeriod, iset.bollMult);
     const vwap = computeVWAP(candles);
     const candlePattern = detectCandlePattern(candles);
     const divergence = detectDivergence(candles);
@@ -2971,6 +3213,12 @@ async function loadAsset(asset, fullAnalysis = true){
 
     // check every locked signal against the current price on EVERY refresh (full or price-only)
     updateSignalStatuses(livePrice);
+    // then run the live trade-management "robot" pass over every still-open signal using the
+    // freshest indicator readings available (even on price-only refreshes, rsi/macd/divergence
+    // above are always recomputed from the latest candles — only the deeper SMC structure is
+    // reused from the last full analysis, which is a reasonable and much cheaper approximation)
+    updateSignalAdvisories({ rsiVal: rsi, macd, structure, divergence, price: livePrice, regime });
+    renderSignalCards();
 
     if(fullAnalysis){
       // a qualifying setup becomes its own new locked card — it never overwrites an existing one
@@ -3032,6 +3280,16 @@ function openSettings(){
   $('apiKeyInput').value = state.apiKey;
   $('apiKeyRow').classList.toggle('hidden', state.goldSource !== 'twelvedata');
   $('aiKeyInput').value = state.aiKey;
+  const iset = state.indicatorSettings;
+  $('setRsiPeriod').value = iset.rsiPeriod;
+  $('setEmaFast').value = iset.emaFast;
+  $('setEmaMid').value = iset.emaMid;
+  $('setEmaSlow').value = iset.emaSlow;
+  $('setMacdFast').value = iset.macdFast;
+  $('setMacdSlow').value = iset.macdSlow;
+  $('setMacdSignal').value = iset.macdSignal;
+  $('setBollPeriod').value = iset.bollPeriod;
+  $('setBollMult').value = iset.bollMult;
   $('settingsModal').classList.remove('hidden');
 }
 function closeSettings(){ $('settingsModal').classList.add('hidden'); }
@@ -3050,10 +3308,46 @@ function saveSettings(){
   localStorage.setItem('nabd_goldSource', selected);
   localStorage.setItem('nabd_twelveDataKey', key);
   localStorage.setItem('nabd_aiKey', aiKey);
+
+  // indicator settings — fall back to the previous value for any field left blank/invalid
+  // rather than silently breaking the analysis engine with NaN.
+  const num = (id, fallback, min, max) => {
+    const v = parseFloat($(id).value);
+    if(isNaN(v) || v < min || v > max) return fallback;
+    return v;
+  };
+  const prev = state.indicatorSettings;
+  state.indicatorSettings = {
+    rsiPeriod:   num('setRsiPeriod',   prev.rsiPeriod,   2, 50),
+    emaFast:     num('setEmaFast',     prev.emaFast,     2, 100),
+    emaMid:      num('setEmaMid',      prev.emaMid,      5, 150),
+    emaSlow:     num('setEmaSlow',     prev.emaSlow,     20, 400),
+    macdFast:    num('setMacdFast',    prev.macdFast,    2, 50),
+    macdSlow:    num('setMacdSlow',    prev.macdSlow,    5, 100),
+    macdSignal:  num('setMacdSignal',  prev.macdSignal,  2, 50),
+    bollPeriod:  num('setBollPeriod',  prev.bollPeriod,  5, 100),
+    bollMult:    num('setBollMult',    prev.bollMult,    1, 4),
+  };
+  saveIndicatorSettings();
+
   closeSettings();
   showToast('تم حفظ الإعدادات.');
-  loadAsset('gold');
+  loadAsset('gold', true);
   startPolling();
+}
+
+function resetIndicatorDefaults(){
+  const defaults = { rsiPeriod: 14, emaFast: 20, emaMid: 50, emaSlow: 200, macdFast: 12, macdSlow: 26, macdSignal: 9, bollPeriod: 20, bollMult: 2 };
+  $('setRsiPeriod').value = defaults.rsiPeriod;
+  $('setEmaFast').value = defaults.emaFast;
+  $('setEmaMid').value = defaults.emaMid;
+  $('setEmaSlow').value = defaults.emaSlow;
+  $('setMacdFast').value = defaults.macdFast;
+  $('setMacdSlow').value = defaults.macdSlow;
+  $('setMacdSignal').value = defaults.macdSignal;
+  $('setBollPeriod').value = defaults.bollPeriod;
+  $('setBollMult').value = defaults.bollMult;
+  showToast('تم استرجاع القيم الافتراضية — اضغط "حفظ" لتطبيقها.');
 }
 
 /* ===================== Init ===================== */
@@ -3380,6 +3674,12 @@ function init(){
       $('apiKeyRow').classList.toggle('hidden', e.target.value !== 'twelvedata');
     });
   });
+
+  $('resetIndicatorDefaults').addEventListener('click', resetIndicatorDefaults);
+  $('chartModeToggle').addEventListener('click', () => {
+    setChartMode(state.chartMode === 'tradingview' ? 'internal' : 'tradingview');
+  });
+  setChartMode(state.chartMode); // restore user's last chart-mode choice on load
 
   $('shouldEnterBtn').addEventListener('click', evaluateShouldEnter);
   $('verdictClose').addEventListener('click', () => $('verdictBanner').classList.add('hidden'));
