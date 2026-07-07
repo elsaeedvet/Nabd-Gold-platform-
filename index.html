@@ -1004,7 +1004,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-07-01'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-07-02'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1084,8 +1084,22 @@ function addSignalIfNew(rec){
     reasons: rec.reasons.slice(0, 5),
     status: 'open',
     closedAt: null,
+    advisory: null,
+    _lastNotifiedAdvisory: null,
   });
   saveSignals();
+  const dirAr = direction === 'buy' ? 'شراء 📈' : 'بيع 📉';
+  notify('🟢 توصية دخول جديدة', `${dirAr} | دخول: ${entry.toFixed(2)} | وقف: ${stop.toFixed(2)} | هدف 1: ${tp1.toFixed(2)}`, 'nabd-entry-' + Date.now());
+}
+
+function signalExitNotifTitle(status){
+  return {
+    stop:    '🛑 خروج: تم ضرب وقف الخسارة',
+    tp1:     '🎯 خروج: تحقق الهدف الأول',
+    tp2:     '🎯 خروج: تحقق الهدف الثاني',
+    tp3:     '🎯🎯 خروج: تحقق الهدف الثالث (كامل)',
+    expired: '⌛ انتهت صلاحية التوصية بدون تفعيل',
+  }[status] || 'تحديث حالة الصفقة';
 }
 
 function updateSignalStatuses(livePrice){
@@ -1093,10 +1107,10 @@ function updateSignalStatuses(livePrice){
   let changed = false;
   state.signals.forEach(s => {
     if(s.status !== 'open') return;
+    const prevStatus = s.status;
     if(now - s.createdAt > SIGNAL_EXPIRY_HOURS * 3600000){
-      s.status = 'expired'; s.closedAt = now; changed = true; return;
-    }
-    if(s.direction === 'buy'){
+      s.status = 'expired'; s.closedAt = now; changed = true;
+    } else if(s.direction === 'buy'){
       if(livePrice <= s.stop){ s.status = 'stop'; s.closedAt = now; changed = true; }
       else if(livePrice >= s.tp3){ s.status = 'tp3'; s.closedAt = now; changed = true; }
       else if(livePrice >= s.tp2){ s.status = 'tp2'; s.closedAt = now; changed = true; }
@@ -1106,6 +1120,10 @@ function updateSignalStatuses(livePrice){
       else if(livePrice <= s.tp3){ s.status = 'tp3'; s.closedAt = now; changed = true; }
       else if(livePrice <= s.tp2){ s.status = 'tp2'; s.closedAt = now; changed = true; }
       else if(livePrice <= s.tp1){ s.status = 'tp1'; s.closedAt = now; changed = true; }
+    }
+    if(s.status !== prevStatus){
+      const dirAr = s.direction === 'buy' ? 'شراء' : 'بيع';
+      notify(signalExitNotifTitle(s.status), `${dirAr} من ${s.entry.toFixed(2)} | السعر الحالي: ${livePrice.toFixed(2)}`, 'nabd-exit-' + s.id, { requireInteraction: s.status === 'stop' });
     }
   });
   // keep the list from growing forever: drop closed signals older than 7 days
@@ -1181,10 +1199,25 @@ function computeSignalAdvisory(s, ctx){
   return null;
 }
 
+const ADVISORY_NOTIF_TITLE = {
+  lock_profit: '🟡 حجز أرباح: انتبه لصفقتك',
+  exit_early:  '⚠️ تحذير: ضعف في زخم صفقتك',
+  hedge:       '🛡️ تبريد/هيدج: صفقتك تحتاج انتباه',
+  reinforce:   '💪 تعزيز: صفقتك لا تزال قوية',
+};
+
 function updateSignalAdvisories(ctx){
   state.signals.forEach(s => {
-    if(s.status !== 'open') { s.advisory = null; return; }
+    if(s.status !== 'open') { s.advisory = null; s._lastNotifiedAdvisory = null; return; }
     s.advisory = computeSignalAdvisory(s, ctx);
+    const newType = s.advisory ? s.advisory.type : null;
+    // only notify when the advisory actually CHANGES (null -> type, or type A -> type B) —
+    // never repeat the same standing advisory every single poll, that would be spam, not help.
+    if(newType !== s._lastNotifiedAdvisory && newType){
+      const dirAr = s.direction === 'buy' ? 'شراء' : 'بيع';
+      notify(ADVISORY_NOTIF_TITLE[newType], `صفقة ${dirAr} من ${s.entry.toFixed(2)} — ${s.advisory.text}`, 'nabd-adv-' + s.id + '-' + newType, { requireInteraction: newType === 'hedge' });
+    }
+    s._lastNotifiedAdvisory = newType;
   });
 }
 
@@ -2816,42 +2849,69 @@ async function fetchEconomicCalendar(){
   throw new Error('تعذر تحميل التقويم من كل المصادر المتاحة');
 }
 
-let _calendarReminders = [];
+/* ===================== Unified, reliable notification helper ===================== */
+// IMPORTANT HONEST LIMITATION: this app is a static client-side PWA with no push server.
+// That means notifications can only fire while the app (or its service worker) is alive in
+// the browser/OS — there is no way to wake it up from fully-killed state the way a server-sent
+// push notification could. What we CAN guarantee, and what this does: (1) route notifications
+// through the Service Worker when available, which Android/Chrome deliver far more reliably
+// than a plain page-level Notification, especially for the installed/APK version, and
+// (2) never rely on a single long setTimeout scheduled far in advance (those get silently
+// dropped when a tab/app is suspended) — instead re-check on a short recurring interval AND
+// every time the app becomes visible again, so a reminder that was "missed" while the app was
+// closed still fires the moment it's reopened, as long as it's still relevant.
+function notify(title, body, tag, opts = {}){
+  if(!('Notification' in window) || Notification.permission !== 'granted') return;
+  const payload = { body, tag, icon: 'data:image/png;base64,iVBORw0KGgo=', ...opts };
+  if(window.swReg && window.swReg.showNotification){
+    window.swReg.showNotification(title, payload).catch(() => {
+      try{ new Notification(title, payload); }catch(e){ /* give up quietly */ }
+    });
+  } else {
+    try{ new Notification(title, payload); }catch(e){ /* give up quietly */ }
+  }
+}
 
-function scheduleReminders(events){
-  // Clear old timeouts
-  _calendarReminders.forEach(t => clearTimeout(t));
-  _calendarReminders = [];
+const _firedNotifTags = new Set(JSON.parse(localStorage.getItem('nabd_firedNotifTags') || '[]'));
+function markNotifFired(tag){
+  _firedNotifTags.add(tag);
+  // keep this bounded so localStorage doesn't grow forever
+  const arr = Array.from(_firedNotifTags).slice(-300);
+  localStorage.setItem('nabd_firedNotifTags', JSON.stringify(arr));
+}
 
+let _calendarEventsCache = [];
+
+function calendarNotifTick(){
   if(Notification.permission !== 'granted') return;
-
   const now = Date.now();
-  events.forEach(ev => {
+  _calendarEventsCache.forEach(ev => {
     const evTime = ev.dateObj.getTime();
-    const msTo15 = evTime - 15*60*1000 - now;
-    const msTo5  = evTime -  5*60*1000 - now;
+    const minsLeft = (evTime - now) / 60000;
     const nameAr = translateEventName(ev.title);
-
-    if(msTo15 > 0){
-      _calendarReminders.push(setTimeout(() => {
-        new Notification('⏰ حدث اقتصادي خلال 15 دقيقة', {
-          body: `🇺🇸 ${nameAr}\nالتقدير: ${ev.forecast || '—'} | السابق: ${ev.previous || '—'}`,
-          icon: 'data:image/png;base64,iVBORw0KGgo=',
-          tag: 'nabd-cal-15-' + ev.date,
-        });
-      }, msTo15));
+    const tag15 = 'nabd-cal-15-' + ev.date;
+    const tag5  = 'nabd-cal-5-'  + ev.date;
+    // fire the 15-minute reminder any time we notice the event is between 0 and 15 minutes
+    // away and we haven't already fired it — this covers both "timer ticked at the right
+    // moment" AND "app was closed and just reopened while still inside the window"
+    if(minsLeft <= 15 && minsLeft > 0 && !_firedNotifTags.has(tag15)){
+      notify('⏰ حدث اقتصادي خلال 15 دقيقة', `🇺🇸 ${nameAr}\nالتقدير: ${ev.forecast || '—'} | السابق: ${ev.previous || '—'}`, tag15);
+      markNotifFired(tag15);
     }
-    if(msTo5 > 0){
-      _calendarReminders.push(setTimeout(() => {
-        new Notification('🔴 حدث اقتصادي خلال 5 دقائق!', {
-          body: `🇺🇸 ${nameAr}`,
-          icon: 'data:image/png;base64,iVBORw0KGgo=',
-          tag: 'nabd-cal-5-' + ev.date,
-          requireInteraction: true,
-        });
-      }, msTo5));
+    if(minsLeft <= 5 && minsLeft > 0 && !_firedNotifTags.has(tag5)){
+      notify('🔴 حدث اقتصادي خلال 5 دقائق!', `🇺🇸 ${nameAr}`, tag5, { requireInteraction: true });
+      markNotifFired(tag5);
     }
   });
+}
+
+function scheduleReminders(events){
+  // Replaces the old one-shot setTimeout-per-event approach (unreliable — long timers get
+  // dropped when the tab/app is backgrounded or the phone sleeps). Instead we just cache the
+  // events; a recurring interval (started once in init()) re-evaluates all of them every 20s,
+  // and we also run one check immediately and on every tab-visibility change.
+  _calendarEventsCache = events;
+  calendarNotifTick();
 }
 
 function formatEventTime(date){
@@ -3066,7 +3126,7 @@ async function requestNotifPermission(){
   }
   const perm = await Notification.requestPermission();
   if(perm === 'granted'){
-    $('notifStatus').textContent = '✅ سيتم تنبيهك قبل كل حدث بـ 15 دقيقة وقبله بـ 5 دقائق.';
+    $('notifStatus').textContent = '✅ فُعّلت الإشعارات: دخول، خروج (هدف/وقف)، تعزيز، تبريد، وتنبيهات اقتصادية 15 و5 دقائق قبل الحدث.';
     $('notifBtn').textContent = '🔔✅';
     loadCalendar(); // reschedule with permission now granted
   } else {
@@ -3701,10 +3761,15 @@ function init(){
   // so timers scheduled hours ago can silently die; this refreshes them whenever the user reopens the app.
   if('Notification' in window){
     if(Notification.permission === 'granted') $('notifBtn').textContent = '🔔✅';
-    else if(Notification.permission === 'default') $('notifStatus').textContent = 'فعّل 🔔 لتصلك تنبيهات قبل الأخبار المهمة بـ 15 و5 دقائق.';
+    else if(Notification.permission === 'default') $('notifStatus').textContent = 'فعّل 🔔 لتصلك كل التنبيهات: دخول، خروج، تعزيز، تبريد، وأخبار اقتصادية.';
   }
+  // Re-check every 20s instead of relying on long-lived setTimeouts (which mobile browsers
+  // silently kill while the app is backgrounded). This interval only fires notifications whose
+  // window has genuinely opened, so it's cheap and safe to run this often.
+  setInterval(calendarNotifTick, 20000);
   document.addEventListener('visibilitychange', () => {
     if(document.visibilityState === 'visible'){
+      calendarNotifTick(); // catch up immediately in case a reminder's window was missed while closed
       if(state.calendarEvents && state.calendarEvents.length) scheduleReminders(state.calendarEvents);
       loadAsset('gold', false);
       loadCalendar();
@@ -3732,6 +3797,8 @@ document.addEventListener('DOMContentLoaded', function(){
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('sw.js').then(reg => {
+        window.swReg = reg; // used by notify() below so notifications go through the SW (more
+                             // reliable for an installed PWA/APK than the plain Notification API)
         // If there's already a waiting worker (an update was downloaded
         // on a previous visit), activate it now.
         if(reg.waiting){
