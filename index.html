@@ -625,6 +625,14 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 }
 .modal-content h2{ font-size:17px; margin-bottom:16px; }
 .setting-label{ display:block; font-size:12.5px; color: var(--text-dim); margin-bottom:10px; font-weight:600; }
+.setting-hint{ font-size:11px; color: var(--text-dim); line-height:1.6; margin:0 0 8px; }
+.setting-group{ margin-bottom:18px; padding-bottom:16px; border-bottom:1px solid var(--border); }
+.setting-group:last-of-type{ border-bottom:none; }
+.text-input{
+  background: var(--surface-2); border:1px solid var(--border); color: var(--text);
+  border-radius:8px; padding:10px 12px; font-size:13px; direction:ltr; text-align:left;
+}
+.text-input:focus{ outline:none; border-color: var(--gold); }
 .radio-row{
   display:flex; align-items:flex-start; gap:10px; padding:11px 10px;
   border:1px solid var(--border); border-radius: var(--radius-md); margin-bottom:9px; cursor:pointer;
@@ -974,6 +982,14 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
     </div>
 
     <div class="setting-group">
+      <label class="setting-label">🔔 الإشعارات الحقيقية (Push Server)</label>
+      <p class="setting-hint">لو عندك سيرفر نبض الخلفي شغال، حط رابطه هنا عشان توصلك إشعارات حقيقية حتى لو التطبيق مقفول (طالما الموبايل مش قافل التطبيق بالكامل من الخلفية).</p>
+      <input type="text" id="backendUrlInput" class="text-input" placeholder="https://your-app.onrender.com" style="width:100%;margin-bottom:8px;">
+      <button id="subscribePushBtn" class="ghost-btn" type="button" style="width:100%;">🔗 الاشتراك في الإشعارات الحقيقية</button>
+      <p id="pushStatus" class="notif-status"></p>
+    </div>
+
+    <div class="setting-group">
       <label class="setting-label">مدخلات المؤشرات الفنية (متقدم)</label>
       <div class="indicator-settings-grid">
         <label class="indicator-field"><span>فترة RSI</span><input type="number" id="setRsiPeriod" min="2" max="50"></label>
@@ -1004,11 +1020,12 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-07-02'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-07-04'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
   goldSource: localStorage.getItem('nabd_goldSource') || 'paxg',
+  backendUrl: localStorage.getItem('nabd_backendUrl') || '',
   apiKey: localStorage.getItem('nabd_twelveDataKey') || '',
   aiKey: localStorage.getItem('nabd_aiKey') || '',
   candles: { gold: [] },
@@ -3119,6 +3136,64 @@ async function loadCalendar(manual = false){
   }
 }
 
+/* ===================== Real Web Push subscription (talks to the نبض backend server) ===================== */
+// This is what makes notifications actually reliable while the app is closed (within the
+// limits explained in the backend's README — no push server can survive a fully force-killed
+// app on an aggressive battery-saver phone, but this is as close as a client-only PWA can get).
+function urlBase64ToUint8Array(base64String){
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+}
+
+async function subscribeToPush(){
+  const backendUrl = $('backendUrlInput').value.trim().replace(/\/$/, '');
+  if(!backendUrl){
+    $('pushStatus').textContent = 'حط رابط السيرفر الخلفي الأول.';
+    return;
+  }
+  if(!('serviceWorker' in navigator) || !('PushManager' in window)){
+    $('pushStatus').textContent = 'المتصفح ده مش بيدعم Push حقيقي.';
+    return;
+  }
+  state.backendUrl = backendUrl;
+  localStorage.setItem('nabd_backendUrl', backendUrl);
+
+  $('pushStatus').textContent = '⏳ جارٍ الاشتراك…';
+  try{
+    if(Notification.permission !== 'granted'){
+      const perm = await Notification.requestPermission();
+      if(perm !== 'granted'){ $('pushStatus').textContent = 'محتاج تسمح بالإشعارات الأول.'; return; }
+    }
+
+    const keyRes = await fetch(backendUrl + '/vapidPublicKey');
+    if(!keyRes.ok) throw new Error('تعذر الوصول للسيرفر — تأكد من الرابط ومن إنه شغال.');
+    const { publicKey } = await keyRes.json();
+
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if(!sub){
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey),
+      });
+    }
+
+    const subRes = await fetch(backendUrl + '/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sub),
+    });
+    if(!subRes.ok) throw new Error('السيرفر رفض الاشتراك.');
+
+    $('pushStatus').textContent = '✅ تم الاشتراك بنجاح — هتوصلك إشعارات حقيقية من السيرفر الخلفي.';
+    showToast('تم تفعيل الإشعارات الحقيقية بنجاح.');
+  }catch(e){
+    $('pushStatus').textContent = '❌ ' + e.message;
+  }
+}
+
 async function requestNotifPermission(){
   if(!('Notification' in window)){
     $('notifStatus').textContent = 'المتصفح لا يدعم الإشعارات.';
@@ -3205,10 +3280,29 @@ async function loadAsset(asset, fullAnalysis = true){
     let candles, livePrice, changePercent, sourceLabel;
 
     if(state.goldSource === 'twelvedata' && state.apiKey){
-      [candles, { price: livePrice, changePercent }] = await Promise.all([
-        fetchTwelveDataSeries(state.apiKey),
-        fetchTwelveDataPrice(state.apiKey),
-      ]);
+      // IMPORTANT (TwelveData free-plan credit budget): the full time_series call is the
+      // expensive one. On a price-only refresh (fullAnalysis = false, i.e. the automatic
+      // poll) we only spend 1 credit on the live price and reuse the last fetched candle
+      // series — patching just its final bar so the chart/indicators still feel "live" —
+      // instead of re-spending credits on a fresh series every single poll. The full series
+      // is only re-fetched on an actual full analysis (manual "إعادة التحليل" or first load).
+      if(fullAnalysis || !state.candles.gold || !state.candles.gold.length){
+        [candles, { price: livePrice, changePercent }] = await Promise.all([
+          fetchTwelveDataSeries(state.apiKey),
+          fetchTwelveDataPrice(state.apiKey),
+        ]);
+      } else {
+        ({ price: livePrice, changePercent } = await fetchTwelveDataPrice(state.apiKey));
+        candles = state.candles.gold.slice();
+        const lastIdx = candles.length - 1;
+        const last = candles[lastIdx];
+        candles[lastIdx] = {
+          ...last,
+          close: livePrice,
+          high: Math.max(last.high, livePrice),
+          low: Math.min(last.low, livePrice),
+        };
+      }
       sourceLabel = 'TwelveData · XAU/USD';
     } else {
       [candles, { price: livePrice, changePercent }] = await Promise.all([
@@ -3246,10 +3340,19 @@ async function loadAsset(asset, fullAnalysis = true){
       structure = detectMarketStructure(candles);
       orderBlocks = detectOrderBlocks(candles);
       fvg = detectFVG(candles);
-      try{
-        const htfCandles = await fetchHigherTimeframeCandles();
-        htfTrend = computeHigherTFTrend(htfCandles);
-      }catch(e){ htfTrend = null; } // non-critical: proceed without the multi-timeframe gate if this fails
+      // The 4h trend rarely flips within a few minutes, so on TwelveData we only actually
+      // spend a credit re-fetching it once every 20 minutes (or immediately if we've never
+      // fetched it yet) — any full-analysis in between reuses the frozen value.
+      const htfStale = !state.lastHtfFetchAt || (Date.now() - state.lastHtfFetchAt) > 20 * 60000;
+      if(state.goldSource !== 'twelvedata' || htfStale || !state.frozenHtfTrend.gold){
+        try{
+          const htfCandles = await fetchHigherTimeframeCandles();
+          htfTrend = computeHigherTFTrend(htfCandles);
+          state.lastHtfFetchAt = Date.now();
+        }catch(e){ htfTrend = state.frozenHtfTrend.gold || null; }
+      } else {
+        htfTrend = state.frozenHtfTrend.gold;
+      }
     } else {
       chartPattern = state.frozenChartPattern.gold;
       structure = state.frozenStructure.gold;
@@ -3326,9 +3429,20 @@ function updateAnalysisTimestamp(asset){
 
 function startPolling(){
   clearInterval(state.refreshTimer);
-  // polling only refreshes price (fullAnalysis = false)
-  const interval = (state.goldSource === 'twelvedata') ? 60000 : 15000;
-  state.refreshTimer = setInterval(() => loadAsset('gold', false), interval);
+  clearInterval(state.fullRefreshTimer);
+
+  if(state.goldSource === 'twelvedata'){
+    // Credit budget for TwelveData's free plan (8 credits/min, 800/day): a price-only poll
+    // costs 1 credit, a full analysis costs 2 (series + price). Every 90s price-only = ~960
+    // calls/day if left open 24/7, which is already tight — so we also space full refreshes
+    // far apart and rely on the manual "إعادة التحليل" button (which has its own 20s cooldown,
+    // see reAnalyzeBtn listener) for on-demand freshness. Adjust these two numbers up if you're
+    // on a paid TwelveData plan with a higher limit, or down if you still hit the rate limit.
+    state.refreshTimer = setInterval(() => loadAsset('gold', false), 90000);
+    state.fullRefreshTimer = setInterval(() => loadAsset('gold', true), 600000); // every 10 min
+  } else {
+    state.refreshTimer = setInterval(() => loadAsset('gold', false), 15000);
+  }
 }
 
 /* ===================== Settings ===================== */
@@ -3340,6 +3454,7 @@ function openSettings(){
   $('apiKeyInput').value = state.apiKey;
   $('apiKeyRow').classList.toggle('hidden', state.goldSource !== 'twelvedata');
   $('aiKeyInput').value = state.aiKey;
+  $('backendUrlInput').value = state.backendUrl;
   const iset = state.indicatorSettings;
   $('setRsiPeriod').value = iset.rsiPeriod;
   $('setEmaFast').value = iset.emaFast;
@@ -3365,6 +3480,8 @@ function saveSettings(){
   state.goldSource = selected;
   state.apiKey = key;
   state.aiKey = aiKey;
+  state.backendUrl = $('backendUrlInput').value.trim().replace(/\/$/, '');
+  localStorage.setItem('nabd_backendUrl', state.backendUrl);
   localStorage.setItem('nabd_goldSource', selected);
   localStorage.setItem('nabd_twelveDataKey', key);
   localStorage.setItem('nabd_aiKey', aiKey);
@@ -3724,6 +3841,13 @@ function init(){
     loadCalendar(true);
   });
   $('reAnalyzeBtn').addEventListener('click', () => {
+    const minGapMs = state.goldSource === 'twelvedata' ? 20000 : 3000;
+    const sinceLast = Date.now() - (state.lastFullAnalysisAt || 0);
+    if(sinceLast < minGapMs){
+      showToast(`استنى ${Math.ceil((minGapMs - sinceLast) / 1000)} ثانية قبل إعادة التحليل تاني (لتجنب تجاوز حد الطلبات).`);
+      return;
+    }
+    state.lastFullAnalysisAt = Date.now();
     showToast('جارٍ إعادة التحليل…');
     loadAsset('gold', true);
   });
@@ -3735,6 +3859,7 @@ function init(){
     });
   });
 
+  $('subscribePushBtn').addEventListener('click', subscribeToPush);
   $('resetIndicatorDefaults').addEventListener('click', resetIndicatorDefaults);
   $('chartModeToggle').addEventListener('click', () => {
     setChartMode(state.chartMode === 'tradingview' ? 'internal' : 'tradingview');
