@@ -624,8 +624,34 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
   border-radius: 22px 22px 0 0; padding: 22px 20px calc(20px + env(safe-area-inset-bottom));
 }
 .modal-content h2{ font-size:17px; margin-bottom:16px; }
+.modal-header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+.modal-header h3{ font-size:16px; margin:0; }
 .setting-label{ display:block; font-size:12.5px; color: var(--text-dim); margin-bottom:10px; font-weight:600; }
 .setting-hint{ font-size:11px; color: var(--text-dim); line-height:1.6; margin:0 0 8px; }
+
+.header-actions{ display:flex; align-items:center; gap:6px; }
+.notif-badge{
+  position:absolute; top:-2px; left:-2px; min-width:16px; height:16px; padding:0 3px;
+  background: var(--bear); color:#fff; border-radius:9px; font-size:9.5px; font-weight:800;
+  display:flex; align-items:center; justify-content:center; line-height:1;
+}
+.notif-badge.hidden{ display:none; }
+
+.notif-inbox-list{ list-style:none; margin:0; padding:0; max-height:70vh; overflow-y:auto; }
+.notif-inbox-item{
+  padding:12px 4px; border-bottom:1px solid var(--border); cursor:pointer; transition:.15s;
+}
+.notif-inbox-item:last-child{ border-bottom:none; }
+.notif-inbox-item.unread{ background: rgba(240,185,11,.06); }
+.notif-inbox-row{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.notif-inbox-title{ font-size:12.5px; font-weight:700; display:flex; align-items:center; gap:6px; }
+.notif-inbox-dot{ width:7px; height:7px; border-radius:50%; background: var(--gold); flex-shrink:0; }
+.notif-inbox-time{ font-size:10.5px; color: var(--text-dim); white-space:nowrap; }
+.notif-inbox-body{
+  font-size:11.5px; color: var(--text-dim); line-height:1.6; margin-top:6px;
+  white-space:pre-line; display:none;
+}
+.notif-inbox-item.expanded .notif-inbox-body{ display:block; }
 .setting-group{ margin-bottom:18px; padding-bottom:16px; border-bottom:1px solid var(--border); }
 .setting-group:last-of-type{ border-bottom:none; }
 .text-input{
@@ -685,10 +711,29 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
       <span class="brand-icon-text">📈</span>
       <h1>نبض</h1>
     </div>
-    <button id="settingsBtn" class="icon-btn" aria-label="الإعدادات" type="button">
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 13.5a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V19.6a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3.4a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1.1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.09a1.7 1.7 0 0 0 1-1.55V3.4a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.09a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.09a1.7 1.7 0 0 0 1.55 1H20.6a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1Z"/></svg>
-    </button>
+    <div class="header-actions">
+      <button id="notifInboxBtn" class="icon-btn" aria-label="صندوق الإشعارات" type="button" style="position:relative;">
+        <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        <span id="notifBadge" class="notif-badge hidden">0</span>
+      </button>
+      <button id="settingsBtn" class="icon-btn" aria-label="الإعدادات" type="button">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 13.5a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V19.6a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3.4a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1.1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.09a1.7 1.7 0 0 0 1-1.55V3.4a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.09a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.09a1.7 1.7 0 0 0 1.55 1H20.6a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1Z"/></svg>
+      </button>
+    </div>
   </header>
+
+  <div id="notifInboxModal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>📥 صندوق الإشعارات</h3>
+        <button id="closeNotifInbox" class="icon-btn" type="button">✕</button>
+      </div>
+      <p class="setting-hint">الإشعارات بتتمسح تلقائيًا بعد 48 ساعة من وصولها.</p>
+      <ul id="notifInboxList" class="notif-inbox-list">
+        <li class="news-loading">لا توجد إشعارات بعد.</li>
+      </ul>
+    </div>
+  </div>
 
   <div class="asset-banner">
     <span class="asset-banner-icon">🥇</span>
@@ -1020,7 +1065,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-07-04'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-07-05'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -2866,6 +2911,147 @@ async function fetchEconomicCalendar(){
   throw new Error('تعذر تحميل التقويم من كل المصادر المتاحة');
 }
 
+/* ===================== In-app notification inbox (IndexedDB) ===================== */
+// Mirrors the same store the service worker writes to (see sw.js) so that EVERY
+// notification — whether it came from a real server push or was computed locally by this
+// page — ends up in one unified list the user can always reopen, even if they swiped the
+// OS notification away without tapping it. Records auto-expire after 48h.
+const NOTIF_DB_NAME = 'nabd-db';
+const NOTIF_STORE = 'notifications';
+const NOTIF_RETENTION_MS = 48 * 3600 * 1000;
+
+function openNotifDB(){
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(NOTIF_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if(!db.objectStoreNames.contains(NOTIF_STORE)) db.createObjectStore(NOTIF_STORE, { keyPath: 'id' });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveNotifRecord(record){
+  const db = await openNotifDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(NOTIF_STORE, 'readwrite');
+    tx.objectStore(NOTIF_STORE).put(record);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function getAllNotifRecords(){
+  const db = await openNotifDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(NOTIF_STORE, 'readonly');
+    const req = tx.objectStore(NOTIF_STORE).getAll();
+    req.onsuccess = () => resolve(req.result.sort((a, b) => b.createdAt - a.createdAt));
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function markNotifRead(id){
+  const db = await openNotifDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(NOTIF_STORE, 'readwrite');
+    const store = tx.objectStore(NOTIF_STORE);
+    const req = store.get(id);
+    req.onsuccess = () => {
+      if(req.result){ req.result.read = true; store.put(req.result); }
+    };
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function purgeOldNotifRecords(){
+  const db = await openNotifDB();
+  const cutoff = Date.now() - NOTIF_RETENTION_MS;
+  const all = await getAllNotifRecords();
+  const stale = all.filter(r => r.createdAt < cutoff);
+  if(!stale.length) return;
+  const tx = db.transaction(NOTIF_STORE, 'readwrite');
+  stale.forEach(r => tx.objectStore(NOTIF_STORE).delete(r.id));
+}
+
+function notifIconFor(tag){
+  if(!tag) return '🔔';
+  if(tag.startsWith('nabd-entry')) return '🟢';
+  if(tag.startsWith('nabd-exit')) return tag.includes('stop') ? '🛑' : '🎯';
+  if(tag.startsWith('nabd-adv')) return '📊';
+  if(tag.startsWith('nabd-cal')) return '📅';
+  return '🔔';
+}
+
+async function renderNotifInbox(){
+  await purgeOldNotifRecords();
+  const records = await getAllNotifRecords();
+  const list = $('notifInboxList');
+  if(!records.length){
+    list.innerHTML = '<li class="news-loading">لا توجد إشعارات بعد.</li>';
+  } else {
+    list.innerHTML = records.map(r => `
+      <li class="notif-inbox-item ${r.read ? '' : 'unread'}" data-id="${escapeHtml(r.id)}">
+        <div class="notif-inbox-row">
+          <span class="notif-inbox-title">${notifIconFor(r.tag)} ${escapeHtml(r.title)}${r.read ? '' : '<span class="notif-inbox-dot"></span>'}</span>
+          <span class="notif-inbox-time">${formatTimeAgo(r.createdAt)}</span>
+        </div>
+        <div class="notif-inbox-body">${escapeHtml(r.body || '')}</div>
+      </li>
+    `).join('');
+    list.querySelectorAll('.notif-inbox-item').forEach(item => {
+      item.addEventListener('click', async () => {
+        const id = item.dataset.id;
+        item.classList.toggle('expanded');
+        if(item.classList.contains('unread')){
+          item.classList.remove('unread');
+          await markNotifRead(id);
+          updateNotifBadge();
+        }
+      });
+    });
+  }
+  updateNotifBadge(records);
+}
+
+async function updateNotifBadge(records){
+  const list = records || await getAllNotifRecords();
+  const unread = list.filter(r => !r.read).length;
+  const badge = $('notifBadge');
+  if(unread > 0){
+    badge.textContent = unread > 99 ? '99+' : String(unread);
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+}
+
+function openNotifInbox(){
+  $('notifInboxModal').classList.remove('hidden');
+  renderNotifInbox();
+}
+function closeNotifInbox(){ $('notifInboxModal').classList.add('hidden'); }
+
+// If the user tapped a real OS notification while the app was already open, the service
+// worker posts this message so we can jump straight to the inbox with that item expanded.
+async function openSpecificNotif(id){
+  if(!id) return;
+  await markNotifRead(id);
+  openNotifInbox();
+  setTimeout(() => {
+    const el = document.querySelector(`.notif-inbox-item[data-id="${CSS.escape(id)}"]`);
+    if(el){ el.classList.add('expanded'); el.classList.remove('unread'); el.scrollIntoView({ block: 'center' }); }
+  }, 150);
+}
+
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.addEventListener('message', event => {
+    if(event.data && event.data.type === 'nabd-open-notif') openSpecificNotif(event.data.id);
+  });
+}
+
 /* ===================== Unified, reliable notification helper ===================== */
 // IMPORTANT HONEST LIMITATION: this app is a static client-side PWA with no push server.
 // That means notifications can only fire while the app (or its service worker) is alive in
@@ -2878,8 +3064,15 @@ async function fetchEconomicCalendar(){
 // every time the app becomes visible again, so a reminder that was "missed" while the app was
 // closed still fires the moment it's reopened, as long as it's still relevant.
 function notify(title, body, tag, opts = {}){
+  const id = (tag || 'notif') + '-' + Date.now();
+  // Always record it in the inbox, even if OS-level permission is off/unsupported — the
+  // in-app history is useful on its own, and costs nothing to keep.
+  saveNotifRecord({ id, title, body: body || '', tag: tag || null, createdAt: Date.now(), read: false })
+    .then(() => { if(!$('notifInboxModal').classList.contains('hidden')) renderNotifInbox(); else updateNotifBadge(); })
+    .catch(() => {});
+
   if(!('Notification' in window) || Notification.permission !== 'granted') return;
-  const payload = { body, tag, icon: 'data:image/png;base64,iVBORw0KGgo=', ...opts };
+  const payload = { body, tag, icon: 'data:image/png;base64,iVBORw0KGgo=', data: { id }, ...opts };
   if(window.swReg && window.swReg.showNotification){
     window.swReg.showNotification(title, payload).catch(() => {
       try{ new Notification(title, payload); }catch(e){ /* give up quietly */ }
@@ -3836,6 +4029,25 @@ function init(){
   $('closeSettings').addEventListener('click', closeSettings);
   $('saveSettings').addEventListener('click', saveSettings);
   $('notifBtn').addEventListener('click', requestNotifPermission);
+
+  $('notifInboxBtn').addEventListener('click', openNotifInbox);
+  $('closeNotifInbox').addEventListener('click', closeNotifInbox);
+  $('notifInboxModal').addEventListener('click', e => { if(e.target.id === 'notifInboxModal') closeNotifInbox(); });
+  updateNotifBadge();
+  setInterval(() => { purgeOldNotifRecords().then(() => updateNotifBadge()); }, 5 * 60000);
+  // If the app was fully closed and got opened via a tapped notification, sw.js appends
+  // ?openNotif=<id> to the URL — jump straight to that notification, then clean the URL.
+  (() => {
+    const params = new URLSearchParams(location.search);
+    const openId = params.get('openNotif');
+    if(openId){
+      openSpecificNotif(openId);
+      params.delete('openNotif');
+      const cleanUrl = location.pathname + (params.toString() ? '?' + params.toString() : '');
+      history.replaceState(null, '', cleanUrl);
+    }
+  })();
+
   $('calRefreshBtn').addEventListener('click', () => {
     if($('calRefreshBtn').disabled) return;
     loadCalendar(true);
