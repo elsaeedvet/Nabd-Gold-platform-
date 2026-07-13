@@ -1065,7 +1065,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-07-05'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-07-06'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -3470,6 +3470,18 @@ async function loadAsset(asset, fullAnalysis = true){
   if(state.loading) return;
   state.loading = true;
   try{
+    // Hard stop: don't fetch anything, don't compute anything, don't touch signals —
+    // during the daily 12–1 AM (Cairo time) maintenance break AND the weekend closure,
+    // the market/broker feed isn't reliable anyway, so there's nothing honest to analyze.
+    const marketStatus = getMarketStatus();
+    if(marketStatus.isClosed){
+      renderMarketStatusBanner(marketStatus);
+      $('trafficLight').className = 'traffic-light tl-closed';
+      $('tlDot').textContent = '🔒';
+      $('tlText').textContent = marketStatus.reason === 'daily' ? 'السوق مغلق — استراحة يومية' : 'السوق مغلق — عطلة نهاية الأسبوع';
+      return;
+    }
+
     let candles, livePrice, changePercent, sourceLabel;
 
     if(state.goldSource === 'twelvedata' && state.apiKey){
@@ -3505,12 +3517,8 @@ async function loadAsset(asset, fullAnalysis = true){
       sourceLabel = 'Binance · PAXG/USDT (بديل للذهب، فريم الساعة)';
     }
 
-    const marketStatus = getMarketStatus();
-    if(marketStatus.isClosed){
-      sourceLabel += state.goldSource === 'twelvedata'
-        ? ' — ⚠️ آخر سعر قبل إغلاق السوق (غير حي الآن)'
-        : ' — ملاحظة: أسواق الكريبتو لا تغلق، لكنها قد لا تعكس سعر الذهب الفعلي أثناء إغلاق السوق التقليدي';
-    }
+    // (marketStatus was already checked at the top of this function — if we got here, the
+    // market is open, so no "closed" annotation on the source label is needed anymore.)
 
     state.candles.gold = candles;
     const closes = candles.map(c => c.close);
@@ -3889,6 +3897,20 @@ const MARKET_SESSIONS = [
 const WEEK_MARKET_OPEN_MIN = 5 * 1440 + 22 * 60;  // Friday 22:00 UTC (minutes since Sunday 00:00 UTC)
 const WEEK_MARKET_CLOSE_MIN = 1320;                // Sunday 22:00 UTC
 
+// The broker's daily maintenance/rollover break: 12:00 AM–1:00 AM Cairo LOCAL time, every
+// single day. We read this via the Africa/Cairo IANA timezone (not a hardcoded UTC offset),
+// so it stays correct automatically across Egypt's DST switches (currently UTC+3 in summer,
+// UTC+2 in winter) without needing to update this code twice a year.
+function getCairoLocalHourMinute(){
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Africa/Cairo', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(new Date());
+  let hour = parseInt(parts.find(p => p.type === 'hour').value, 10);
+  const minute = parseInt(parts.find(p => p.type === 'minute').value, 10);
+  if(hour === 24) hour = 0; // some Intl implementations report midnight as "24"
+  return { hour, minute };
+}
+
 // Single source of truth for "is the market open right now?" — used by the sessions
 // widget, the top banner, AND the recommendation engine, so all three can never disagree.
 function getMarketStatus(){
@@ -3896,24 +3918,37 @@ function getMarketStatus(){
   const utcHour = now.getUTCHours() + now.getUTCMinutes() / 60;
   const dow = now.getUTCDay();
   const weekMinute = dow * 1440 + utcHour * 60;
-  const isClosed = weekMinute >= WEEK_MARKET_OPEN_MIN || weekMinute < WEEK_MARKET_CLOSE_MIN;
+  const weeklyClosed = weekMinute >= WEEK_MARKET_OPEN_MIN || weekMinute < WEEK_MARKET_CLOSE_MIN;
+
+  const { hour: cairoHour, minute: cairoMinute } = getCairoLocalHourMinute();
+  const dailyClosed = cairoHour === 0; // 12:00 AM–1:00 AM Cairo time, every day
+
+  const isClosed = weeklyClosed || dailyClosed;
+  const reason = weeklyClosed ? 'weekend' : (dailyClosed ? 'daily' : null);
 
   let minutesToChange;
-  if(isClosed){
+  if(reason === 'daily'){
+    minutesToChange = 60 - cairoMinute; // reopens at Cairo 01:00
+  } else if(isClosed){
     minutesToChange = WEEK_MARKET_CLOSE_MIN - weekMinute;
     if(minutesToChange < 0) minutesToChange += 10080;
   } else {
     minutesToChange = WEEK_MARKET_OPEN_MIN - weekMinute;
     if(minutesToChange < 0) minutesToChange += 10080;
   }
-  return { isClosed, utcHour, dow, minutesToChange };
+  return { isClosed, utcHour, dow, minutesToChange, reason };
 }
 
 function renderMarketStatusBanner(status){
   const banner = $('marketStatusBanner');
   const hrs = Math.floor(status.minutesToChange / 60);
   const mins = Math.round(status.minutesToChange % 60);
-  if(status.isClosed){
+  if(status.reason === 'daily'){
+    banner.className = 'market-status-banner status-closed';
+    $('marketStatusIcon').textContent = '🌙';
+    $('marketStatusTitle').textContent = 'السوق مغلق الآن — استراحة يومية';
+    $('marketStatusSub').textContent = `استراحة السوق اليومية (١٢–١ صباحًا بتوقيت القاهرة) — يفتح خلال ${mins} دقيقة. التوصيات والصفقات موقوفة مؤقتًا.`;
+  } else if(status.isClosed){
     banner.className = 'market-status-banner status-closed';
     $('marketStatusIcon').textContent = '🔴';
     $('marketStatusTitle').textContent = 'السوق مغلق الآن — عطلة نهاية الأسبوع';
@@ -3922,7 +3957,7 @@ function renderMarketStatusBanner(status){
     banner.className = 'market-status-banner status-open';
     $('marketStatusIcon').textContent = '🟢';
     $('marketStatusTitle').textContent = 'السوق مفتوح الآن — متابعة حية';
-    $('marketStatusSub').textContent = `يغلق نهاية الأسبوع خلال ${hrs}س ${mins}د (الجمعة ١٠ مساءً UTC).`;
+    $('marketStatusSub').textContent = `يغلق نهاية الأسبوع خلال ${hrs}س ${mins}د (الجمعة ١٠ مساءً UTC) — وكمان بيقفل يوميًا ١٢–١ صباحًا بتوقيت القاهرة.`;
   }
 }
 
@@ -3941,9 +3976,11 @@ function renderSessions(){
     const banner = document.createElement('div');
     banner.className = 'session-box session-closed-banner';
     banner.style.gridColumn = '1 / -1';
-    banner.innerHTML = `
-      <span class="session-name">🌙 كل الجلسات مغلقة — عطلة نهاية الأسبوع</span>
-      <span class="session-countdown">يفتح الأحد الساعة ٢٢:٠٠ (توقيت UTC) — خلال ${hrs}س ${mins}د</span>`;
+    banner.innerHTML = status.reason === 'daily'
+      ? `<span class="session-name">🌙 كل الجلسات مغلقة — استراحة يومية (١٢–١ صباحًا بتوقيت القاهرة)</span>
+         <span class="session-countdown">يفتح خلال ${mins} دقيقة</span>`
+      : `<span class="session-name">🌙 كل الجلسات مغلقة — عطلة نهاية الأسبوع</span>
+         <span class="session-countdown">يفتح الأحد الساعة ٢٢:٠٠ (توقيت UTC) — خلال ${hrs}س ${mins}د</span>`;
     row.appendChild(banner);
     return;
   }
