@@ -1065,7 +1065,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-07-06'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-07-07'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1411,10 +1411,10 @@ function computeRSISeries(closes, period = 14){
 
 // Regular divergence: price and momentum disagreeing at swing points is one of the more
 // reliable, widely-documented reversal signals in technical analysis.
-function detectDivergence(candles, lookback = 60){
+function detectDivergence(candles, lookback = 60, rsiPeriod = 14){
   if(candles.length < lookback + 20) return null;
   const closes = candles.map(c => c.close);
-  const rsiSeries = computeRSISeries(closes, 14);
+  const rsiSeries = computeRSISeries(closes, rsiPeriod);
   const slice = candles.slice(-lookback);
   const sliceStart = candles.length - lookback;
   const pivots = findSwingPivots(slice, 3);
@@ -3532,7 +3532,7 @@ async function loadAsset(asset, fullAnalysis = true){
     const boll = computeBollinger(closes, iset.bollPeriod, iset.bollMult);
     const vwap = computeVWAP(candles);
     const candlePattern = detectCandlePattern(candles);
-    const divergence = detectDivergence(candles);
+    const divergence = detectDivergence(candles, 60, iset.rsiPeriod);
     const regime = detectMarketRegime(closes);
 
     let chartPattern, structure, orderBlocks, fvg, htfTrend;
@@ -3748,26 +3748,30 @@ function runBacktest(candles, lookaheadBars = 48){
   const trades = [];
   const minHistory = 220;
   let i = minHistory;
+  const iset = state.indicatorSettings; // BUGFIX: this used to silently ignore the user's
+  // custom indicator settings and always test with the hardcoded defaults (RSI 14, MACD
+  // 12/26/9, etc), so a backtest could look completely different from what live analysis
+  // was actually using. Now both paths share exactly the same settings.
 
   while(i < candles.length - 1){
     const windowCandles = candles.slice(0, i + 1);
     const closes = windowCandles.map(c => c.close);
     const price = closes[closes.length - 1];
 
-    const rsi = computeRSI(closes);
-    const macd = computeMACD(closes);
+    const rsi = computeRSI(closes, iset.rsiPeriod);
+    const macd = computeMACD(closes, iset.macdFast, iset.macdSlow, iset.macdSignal);
     const fib = computeFibonacci(windowCandles);
     const sr = computeSupportResistance(windowCandles, price);
-    const ema = computeEMAs(closes);
+    const ema = computeEMAs(closes, iset.emaFast, iset.emaMid, iset.emaSlow);
     const atr = computeATR(windowCandles);
-    const boll = computeBollinger(closes);
+    const boll = computeBollinger(closes, iset.bollPeriod, iset.bollMult);
     const vwap = computeVWAP(windowCandles);
     const candlePattern = detectCandlePattern(windowCandles);
     const chartPattern = detectChartPattern(windowCandles);
     const structure = detectMarketStructure(windowCandles);
     const orderBlocks = detectOrderBlocks(windowCandles);
     const fvg = detectFVG(windowCandles);
-    const divergence = detectDivergence(windowCandles);
+    const divergence = detectDivergence(windowCandles, 60, iset.rsiPeriod);
     const regime = detectMarketRegime(closes);
 
     const rec = buildRecommendation({
@@ -4125,7 +4129,8 @@ function init(){
     const candles = state.candles.gold;
     if(candles && candles.length){
       drawLineChart('priceChart', candles, ACCENT.gold);
-      const macd = computeMACD(candles.map(c => c.close));
+      const iset = state.indicatorSettings;
+      const macd = computeMACD(candles.map(c => c.close), iset.macdFast, iset.macdSlow, iset.macdSignal);
       drawMacdChart(macd);
     }
   });
