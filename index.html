@@ -151,6 +151,24 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 }
 .indicator-field input:focus{ outline:none; border-color: var(--gold); }
 
+/* ---------- confidence breakdown transparency panel ---------- */
+.confidence-breakdown-toggle{ width:100%; margin-top:10px; font-size:11.5px; padding:9px; }
+.confidence-breakdown-toggle.hidden{ display:none; }
+.confidence-breakdown-panel{ margin-top:10px; }
+.confidence-breakdown-panel.hidden{ display:none; }
+.cbd-row{
+  display:flex; align-items:center; gap:8px; padding:7px 2px; border-bottom:1px solid var(--border);
+  font-size:11.5px;
+}
+.cbd-row:last-child{ border-bottom:none; }
+.cbd-label{ flex:0 0 92px; color: var(--text-dim); }
+.cbd-bar-track{ flex:1; height:7px; background: var(--surface-2); border-radius:4px; overflow:hidden; position:relative; }
+.cbd-bar-fill{ height:100%; border-radius:4px; }
+.cbd-bar-fill.bull{ background: var(--bull); }
+.cbd-bar-fill.bear{ background: var(--bear); }
+.cbd-weight{ flex:0 0 auto; font-family: var(--font-mono); font-size:10.5px; color: var(--text-dim); }
+.cbd-weight.learned{ color: var(--gold-glow); font-weight:700; }
+
 /* ---------- live trade-management advisory ---------- */
 .signal-advisory{
   margin-top:10px; padding:10px 12px; border-radius:10px; border:1px solid var(--border);
@@ -828,6 +846,9 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
         <li class="reason-placeholder">جارٍ التحليل…</li>
       </ul>
 
+      <button id="confBreakdownToggle" class="ghost-btn confidence-breakdown-toggle hidden" type="button">📊 ليه نسبة الثقة دي؟ (تفصيل كامل)</button>
+      <div id="confBreakdownPanel" class="confidence-breakdown-panel hidden"></div>
+
       <div id="aiAnalysisBox" class="ai-analysis-box hidden">
         <div class="ai-analysis-title">🤖 تحليل معمّق (ذكاء اصطناعي)</div>
         <p id="aiAnalysisText" class="ai-analysis-text">—</p>
@@ -1065,7 +1086,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-07-07'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-07-08'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1083,6 +1104,7 @@ const state = {
   frozenOB: { gold: null },
   frozenFVG: { gold: null },
   frozenHtfTrend: { gold: null },
+  frozenDxy: null,
   refreshTimer: null,
   calendarTimer: null,
   calendarRetryTimer: null,
@@ -1129,6 +1151,43 @@ function saveSignals(){
   catch(e){ /* storage full/unavailable — ignore, in-memory state still works this session */ }
 }
 
+/* ===================== Self-learning category performance tracking ===================== */
+// Every time a signal actually closes (hits a target or the stop), we credit/blame every
+// indicator CATEGORY that agreed with that trade's direction at entry time. Over enough
+// closed trades, categories that have genuinely been more reliable for THIS specific market
+// (not some generic textbook assumption) get more weight in future confidence calculations —
+// see `weightOf()` inside buildRecommendation. Categories with too few samples (<5) stay at
+// neutral weight 1 so a lucky/unlucky streak of 2-3 trades can't skew things.
+function getCategoryStats(){
+  try{ return JSON.parse(localStorage.getItem('nabd_categoryStats') || '{}'); }
+  catch(e){ return {}; }
+}
+function saveCategoryStats(stats){
+  localStorage.setItem('nabd_categoryStats', JSON.stringify(stats));
+}
+function getCategoryWeightMap(){
+  const stats = getCategoryStats();
+  const map = {};
+  for(const [category, s] of Object.entries(stats)){
+    const total = s.wins + s.losses;
+    const winRate = total ? s.wins / total : 0.5;
+    // maps win rate 0%→weight 0.6, 50%→1.0, 100%→1.4 (capped) — enough to matter without
+    // letting one category ever fully silence or dominate the vote.
+    const weight = Math.max(0.6, Math.min(1.4, 0.6 + winRate * 0.8));
+    map[category] = { weight, sampleSize: total };
+  }
+  return map;
+}
+function recordCategoryOutcomes(categories, isWin){
+  if(!categories || !categories.length) return;
+  const stats = getCategoryStats();
+  categories.forEach(cat => {
+    if(!stats[cat]) stats[cat] = { wins: 0, losses: 0 };
+    if(isWin) stats[cat].wins++; else stats[cat].losses++;
+  });
+  saveCategoryStats(stats);
+}
+
 function addSignalIfNew(rec){
   if(!rec.levels) return;
   const { direction, entry, stop, tp1, tp2, tp3 } = rec.levels;
@@ -1138,12 +1197,18 @@ function addSignalIfNew(rec){
   );
   if(dupe) return; // same setup still standing — don't spawn a near-identical card
 
+  const tradeDir = direction === 'buy' ? 1 : -1;
+  const agreeingCategories = rec.breakdown
+    ? [...new Set(rec.breakdown.filter(b => b.dir === tradeDir).map(b => b.category))]
+    : [];
+
   state.signals.unshift({
     id: 'sig_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
     createdAt: Date.now(),
     direction, entry, stop, tp1, tp2, tp3,
     confidence: rec.confidence,
     reasons: rec.reasons.slice(0, 5),
+    categories: agreeingCategories,
     status: 'open',
     closedAt: null,
     advisory: null,
@@ -1186,6 +1251,11 @@ function updateSignalStatuses(livePrice){
     if(s.status !== prevStatus){
       const dirAr = s.direction === 'buy' ? 'شراء' : 'بيع';
       notify(signalExitNotifTitle(s.status), `${dirAr} من ${s.entry.toFixed(2)} | السعر الحالي: ${livePrice.toFixed(2)}`, 'nabd-exit-' + s.id, { requireInteraction: s.status === 'stop' });
+      // Feed the self-learning weight system — a target hit credits every category that
+      // agreed with this trade's direction at entry; a stop-out counts against them. An
+      // expiry (never triggered either way) is genuinely ambiguous, so it's skipped.
+      if(s.status === 'stop') recordCategoryOutcomes(s.categories, false);
+      else if(s.status === 'tp1' || s.status === 'tp2' || s.status === 'tp3') recordCategoryOutcomes(s.categories, true);
     }
   });
   // keep the list from growing forever: drop closed signals older than 7 days
@@ -1353,6 +1423,74 @@ async function fetchTwelveDataSeries(apikey, interval = '1h', outputsize = 200){
     open: parseFloat(v.open), high: parseFloat(v.high),
     low: parseFloat(v.low), close: parseFloat(v.close), volume: 0,
   }));
+}
+
+/* ===================== DXY (US Dollar Index) counter-filter ===================== */
+// Gold and the US Dollar Index almost always move opposite each other, since gold is priced
+// in dollars — a strengthening dollar makes gold relatively more expensive for everyone else,
+// which is bearish pressure, and vice versa. There's no free, key-less, CORS-friendly *live*
+// DXY feed, so instead we compute the REAL official ICE formula ourselves from free spot
+// forex rates (open.er-api.com — free, no key, CORS-enabled, refreshed roughly daily):
+//   DXY = 50.14348112 × EURUSD^-0.576 × USDJPY^0.136 × GBPUSD^-0.119
+//         × USDCAD^0.091 × USDSEK^0.042 × USDCHF^0.036
+// Because the underlying rates only refresh ~once a day, treat this as a daily MACRO bias
+// filter, not a live intraday signal — which is exactly the right timeframe for "is the
+// dollar backdrop helping or hurting gold today", not tick-scalping.
+async function fetchDXY(){
+  const res = await fetch('https://open.er-api.com/v6/latest/USD');
+  if(!res.ok) throw new Error('تعذر جلب أسعار الصرف لحساب DXY');
+  const d = await res.json();
+  if(d.result !== 'success' || !d.rates) throw new Error('استجابة غير متوقعة من مصدر أسعار الصرف');
+  const r = d.rates;
+  const eurusd = 1 / r.EUR, usdjpy = r.JPY, gbpusd = 1 / r.GBP, usdcad = r.CAD, usdsek = r.SEK, usdchf = r.CHF;
+  const value = 50.14348112 *
+    Math.pow(eurusd, -0.576) * Math.pow(usdjpy, 0.136) * Math.pow(gbpusd, -0.119) *
+    Math.pow(usdcad, 0.091) * Math.pow(usdsek, 0.042) * Math.pow(usdchf, 0.036);
+  return { value, fetchedAt: Date.now() };
+}
+
+// Compares today's computed DXY value against the last one we had cached (from the previous
+// fetch, at least a few hours earlier) to derive a simple rising/falling/flat trend.
+function getDXYTrend(current, previous){
+  if(!previous) return 'flat';
+  const changePct = (current.value - previous.value) / previous.value * 100;
+  if(changePct > 0.08) return 'up';
+  if(changePct < -0.08) return 'down';
+  return 'flat';
+}
+
+/* ===================== Volume confirmation (On-Balance Volume) ===================== */
+// Only meaningful when the candles carry REAL traded volume (Binance/PAXG) — forex/XAU-USD
+// quotes from TwelveData have no centralized volume (OTC market), so this is honestly skipped
+// on that source rather than faked.
+function computeOBV(candles){
+  if(!candles.length || candles.every(c => !c.volume)) return null;
+  let obv = 0;
+  const series = [0];
+  for(let i = 1; i < candles.length; i++){
+    if(candles[i].close > candles[i-1].close) obv += candles[i].volume;
+    else if(candles[i].close < candles[i-1].close) obv -= candles[i].volume;
+    series.push(obv);
+  }
+  const lookback = Math.min(14, series.length - 1);
+  const obvSlope = series[series.length - 1] - series[series.length - 1 - lookback];
+  const priceSlope = candles[candles.length - 1].close - candles[candles.length - 1 - lookback].close;
+  return { series, obvSlope, priceSlope };
+}
+
+// Wraps fetchDXY() with an hour-long cache (no point hammering a daily-refreshed source
+// every minute) and persists the last TWO values across page reloads so the up/down trend
+// comparison still works even right after opening the app fresh.
+async function getDXYWithTrend(){
+  const cache = JSON.parse(localStorage.getItem('nabd_dxyCache') || 'null');
+  const now = Date.now();
+  if(cache && cache.current && (now - cache.current.fetchedAt) < 3600000){
+    return { value: cache.current.value, trend: getDXYTrend(cache.current, cache.previous) };
+  }
+  const fresh = await fetchDXY();
+  const next = { previous: cache ? cache.current : null, current: fresh };
+  localStorage.setItem('nabd_dxyCache', JSON.stringify(next));
+  return { value: fresh.value, trend: getDXYTrend(fresh, next.previous) };
 }
 
 async function fetchTwelveDataPrice(apikey){
@@ -1881,24 +2019,30 @@ function chartPatternIcon(name, bias){
 
 /* ===================== Recommendation engine ===================== */
 
-const TOTAL_POSSIBLE_SIGNALS = 13; // rsi, macd, fib, sr-support, sr-resistance, candle, chartPattern, ema, vwap, structure(BOS/CHOCH), OB/FVG, divergence, regime-bonus
+const TOTAL_POSSIBLE_SIGNALS = 15; // rsi, macd, fib, sr-support, sr-resistance, candle, chartPattern, ema, vwap, structure(BOS/CHOCH), OB/FVG, divergence, regime-bonus, dxy, volume(OBV)
 
-function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, price, upcomingEvent, atTime = Date.now() }){
+function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, price, upcomingEvent, categoryWeights = {}, atTime = Date.now() }){
   let score = 0;
   const votes = [];
   const reasons = [];
+  const catVotes = []; // {category, dir} — powers the weighted confidence + "why this %" breakdown
+
+  const vote = (dir, category, bias, text) => {
+    score += dir; votes.push(dir); catVotes.push({ category, dir });
+    reasons.push({ bias, text, category });
+  };
 
   if(rsi != null){
-    if(rsi <= 30){ score++; votes.push(1); reasons.push({ bias: 'bull', text: `RSI عند ${rsi.toFixed(1)} — تشبع بيعي يرفع احتمال ارتداد صعودي.` }); }
-    else if(rsi >= 70){ score--; votes.push(-1); reasons.push({ bias: 'bear', text: `RSI عند ${rsi.toFixed(1)} — تشبع شرائي يرفع احتمال تصحيح هبوطي.` }); }
-    else reasons.push({ bias: 'neutral', text: `RSI عند ${rsi.toFixed(1)} — نطاق محايد دون إشارة واضحة.` });
+    if(rsi <= 30) vote(1, 'rsi', 'bull', `RSI عند ${rsi.toFixed(1)} — تشبع بيعي يرفع احتمال ارتداد صعودي.`);
+    else if(rsi >= 70) vote(-1, 'rsi', 'bear', `RSI عند ${rsi.toFixed(1)} — تشبع شرائي يرفع احتمال تصحيح هبوطي.`);
+    else reasons.push({ bias: 'neutral', text: `RSI عند ${rsi.toFixed(1)} — نطاق محايد دون إشارة واضحة.`, category: 'rsi' });
   }
 
   if(macd){
     const h = macd.histogram, last = h[h.length - 1], prev = h[h.length - 2];
-    if(last > 0 && last > prev){ score++; votes.push(1); reasons.push({ bias: 'bull', text: 'MACD: هيستوجرام موجب ومتصاعد — زخم صعودي يتسارع.' }); }
-    else if(last < 0 && last < prev){ score--; votes.push(-1); reasons.push({ bias: 'bear', text: 'MACD: هيستوجرام سالب ومتوسع — زخم هبوطي يتسارع.' }); }
-    else reasons.push({ bias: 'neutral', text: 'MACD: زخم غير حاسم (تذبذب حول الصفر أو تباطؤ).' });
+    if(last > 0 && last > prev) vote(1, 'macd', 'bull', 'MACD: هيستوجرام موجب ومتصاعد — زخم صعودي يتسارع.');
+    else if(last < 0 && last < prev) vote(-1, 'macd', 'bear', 'MACD: هيستوجرام سالب ومتوسع — زخم هبوطي يتسارع.');
+    else reasons.push({ bias: 'neutral', text: 'MACD: زخم غير حاسم (تذبذب حول الصفر أو تباطؤ).', category: 'macd' });
   }
 
   if(fib){
@@ -1906,63 +2050,63 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
     const nearest = keyLevels.reduce((a, b) => Math.abs(price - a.price) < Math.abs(price - b.price) ? a : b);
     const distPct = Math.abs(price - nearest.price) / price;
     if(distPct < 0.006){
-      if(fib.trend === 'up'){ score++; votes.push(1); reasons.push({ bias: 'bull', text: `فيبوناتشي: السعر عند مستوى ${(nearest.pct*100).toFixed(1)}% كدعم ضمن اتجاه صاعد.` }); }
-      else { score--; votes.push(-1); reasons.push({ bias: 'bear', text: `فيبوناتشي: السعر عند مستوى ${(nearest.pct*100).toFixed(1)}% كمقاومة ضمن اتجاه هابط.` }); }
+      if(fib.trend === 'up') vote(1, 'fib', 'bull', `فيبوناتشي: السعر عند مستوى ${(nearest.pct*100).toFixed(1)}% كدعم ضمن اتجاه صاعد.`);
+      else vote(-1, 'fib', 'bear', `فيبوناتشي: السعر عند مستوى ${(nearest.pct*100).toFixed(1)}% كمقاومة ضمن اتجاه هابط.`);
     }
   }
 
   if(sr){
     const nearSup = sr.supports.find(s => Math.abs(price - s.avg) / price < 0.005);
     const nearRes = sr.resistances.find(r => Math.abs(price - r.avg) / price < 0.005);
-    if(nearSup){ score++; votes.push(1); reasons.push({ bias: 'bull', text: `الدعم: السعر على دعم قوي عند ${formatPrice(nearSup.avg)} (اختُبر ${nearSup.strength}×).` }); }
-    if(nearRes){ score--; votes.push(-1); reasons.push({ bias: 'bear', text: `المقاومة: السعر على مقاومة قوية عند ${formatPrice(nearRes.avg)} (اختُبرت ${nearRes.strength}×).` }); }
+    if(nearSup) vote(1, 'sr', 'bull', `الدعم: السعر على دعم قوي عند ${formatPrice(nearSup.avg)} (اختُبر ${nearSup.strength}×).`);
+    if(nearRes) vote(-1, 'sr', 'bear', `المقاومة: السعر على مقاومة قوية عند ${formatPrice(nearRes.avg)} (اختُبرت ${nearRes.strength}×).`);
   }
 
-  if(candle && candle.bias === 'bull'){ score++; votes.push(1); reasons.push({ bias: 'bull', text: `شمعة "${candle.name}" على فريم الساعة — إشارة صعودية قصيرة المدى.` }); }
-  else if(candle && candle.bias === 'bear'){ score--; votes.push(-1); reasons.push({ bias: 'bear', text: `شمعة "${candle.name}" على فريم الساعة — إشارة هبوطية قصيرة المدى.` }); }
+  if(candle && candle.bias === 'bull') vote(1, 'candle', 'bull', `شمعة "${candle.name}" على فريم الساعة — إشارة صعودية قصيرة المدى.`);
+  else if(candle && candle.bias === 'bear') vote(-1, 'candle', 'bear', `شمعة "${candle.name}" على فريم الساعة — إشارة هبوطية قصيرة المدى.`);
 
-  if(chartPattern && chartPattern.bias === 'bull'){ score++; votes.push(1); reasons.push({ bias: 'bull', text: `نمط فني: "${chartPattern.name}" — ${chartPattern.desc}` }); }
-  else if(chartPattern && chartPattern.bias === 'bear'){ score--; votes.push(-1); reasons.push({ bias: 'bear', text: `نمط فني: "${chartPattern.name}" — ${chartPattern.desc}` }); }
+  if(chartPattern && chartPattern.bias === 'bull') vote(1, 'chartPattern', 'bull', `نمط فني: "${chartPattern.name}" — ${chartPattern.desc}`);
+  else if(chartPattern && chartPattern.bias === 'bear') vote(-1, 'chartPattern', 'bear', `نمط فني: "${chartPattern.name}" — ${chartPattern.desc}`);
 
   // EMA 20/50/200 trend stack
   if(ema && ema.ema50 != null && ema.ema200 != null){
     if(price > ema.ema20 && ema.ema20 > ema.ema50 && ema.ema50 > ema.ema200){
-      score++; votes.push(1); reasons.push({ bias: 'bull', text: `المتوسطات المتحركة: ترتيب صاعد كامل (السعر > EMA20 > EMA50 > EMA200) — اتجاه عام صاعد قوي.` });
+      vote(1, 'ema', 'bull', `المتوسطات المتحركة: ترتيب صاعد كامل (السعر > EMA20 > EMA50 > EMA200) — اتجاه عام صاعد قوي.`);
     } else if(price < ema.ema20 && ema.ema20 < ema.ema50 && ema.ema50 < ema.ema200){
-      score--; votes.push(-1); reasons.push({ bias: 'bear', text: `المتوسطات المتحركة: ترتيب هابط كامل (السعر < EMA20 < EMA50 < EMA200) — اتجاه عام هابط قوي.` });
+      vote(-1, 'ema', 'bear', `المتوسطات المتحركة: ترتيب هابط كامل (السعر < EMA20 < EMA50 < EMA200) — اتجاه عام هابط قوي.`);
     } else {
-      reasons.push({ bias: 'neutral', text: `المتوسطات المتحركة: غير متراصفة بالكامل — الاتجاه العام مختلط.` });
+      reasons.push({ bias: 'neutral', text: `المتوسطات المتحركة: غير متراصفة بالكامل — الاتجاه العام مختلط.`, category: 'ema' });
     }
   }
 
   // VWAP bias
   if(vwap && Math.abs(price - vwap.value) / price > 0.0015){
-    if(price > vwap.value){ score++; votes.push(1); reasons.push({ bias: 'bull', text: `VWAP${vwap.approx ? ' (تقريبي)' : ''}: السعر أعلى من المتوسط المرجّح بالحجم عند ${formatPrice(vwap.value)} — ضغط شرائي.` }); }
-    else { score--; votes.push(-1); reasons.push({ bias: 'bear', text: `VWAP${vwap.approx ? ' (تقريبي)' : ''}: السعر أدنى من المتوسط المرجّح بالحجم عند ${formatPrice(vwap.value)} — ضغط بيعي.` }); }
+    if(price > vwap.value) vote(1, 'vwap', 'bull', `VWAP${vwap.approx ? ' (تقريبي)' : ''}: السعر أعلى من المتوسط المرجّح بالحجم عند ${formatPrice(vwap.value)} — ضغط شرائي.`);
+    else vote(-1, 'vwap', 'bear', `VWAP${vwap.approx ? ' (تقريبي)' : ''}: السعر أدنى من المتوسط المرجّح بالحجم عند ${formatPrice(vwap.value)} — ضغط بيعي.`);
   }
 
   // SMC: market structure BOS/CHOCH
   if(structure && structure.event){
-    if(structure.event.bias === 'bull'){ score++; votes.push(1); reasons.push({ bias: 'bull', text: `${structure.event.type === 'BOS' ? 'SMC' : 'SMC ⚠️'}: ${structure.event.desc}` }); }
-    else { score--; votes.push(-1); reasons.push({ bias: 'bear', text: `${structure.event.type === 'BOS' ? 'SMC' : 'SMC ⚠️'}: ${structure.event.desc}` }); }
+    if(structure.event.bias === 'bull') vote(1, 'structure', 'bull', `${structure.event.type === 'BOS' ? 'SMC' : 'SMC ⚠️'}: ${structure.event.desc}`);
+    else vote(-1, 'structure', 'bear', `${structure.event.type === 'BOS' ? 'SMC' : 'SMC ⚠️'}: ${structure.event.desc}`);
   }
 
   // Order Blocks + Fair Value Gaps (price currently reacting inside a zone)
   const inZone = (zone) => zone && price <= zone.top * 1.0015 && price >= zone.bottom * 0.9985;
   let smcZoneVoted = false;
   if(orderBlocks){
-    if(inZone(orderBlocks.bull)){ score++; votes.push(1); reasons.push({ bias: 'bull', text: `Order Block شرائي نشط بين ${formatPrice(orderBlocks.bull.bottom)} و${formatPrice(orderBlocks.bull.top)} — منطقة اهتمام مؤسسي للشراء.` }); smcZoneVoted = true; }
-    if(inZone(orderBlocks.bear)){ score--; votes.push(-1); reasons.push({ bias: 'bear', text: `Order Block بيعي نشط بين ${formatPrice(orderBlocks.bear.bottom)} و${formatPrice(orderBlocks.bear.top)} — منطقة اهتمام مؤسسي للبيع.` }); smcZoneVoted = true; }
+    if(inZone(orderBlocks.bull)){ vote(1, 'smc_zone', 'bull', `Order Block شرائي نشط بين ${formatPrice(orderBlocks.bull.bottom)} و${formatPrice(orderBlocks.bull.top)} — منطقة اهتمام مؤسسي للشراء.`); smcZoneVoted = true; }
+    if(inZone(orderBlocks.bear)){ vote(-1, 'smc_zone', 'bear', `Order Block بيعي نشط بين ${formatPrice(orderBlocks.bear.bottom)} و${formatPrice(orderBlocks.bear.top)} — منطقة اهتمام مؤسسي للبيع.`); smcZoneVoted = true; }
   }
   if(!smcZoneVoted && fvg){
-    if(inZone(fvg.bull)){ score++; votes.push(1); reasons.push({ bias: 'bull', text: `فجوة سيولة عادلة (FVG) صاعدة غير مغلقة بين ${formatPrice(fvg.bull.bottom)} و${formatPrice(fvg.bull.top)}.` }); }
-    else if(inZone(fvg.bear)){ score--; votes.push(-1); reasons.push({ bias: 'bear', text: `فجوة سيولة عادلة (FVG) هابطة غير مغلقة بين ${formatPrice(fvg.bear.bottom)} و${formatPrice(fvg.bear.top)}.` }); }
+    if(inZone(fvg.bull)) vote(1, 'smc_zone', 'bull', `فجوة سيولة عادلة (FVG) صاعدة غير مغلقة بين ${formatPrice(fvg.bull.bottom)} و${formatPrice(fvg.bull.top)}.`);
+    else if(inZone(fvg.bear)) vote(-1, 'smc_zone', 'bear', `فجوة سيولة عادلة (FVG) هابطة غير مغلقة بين ${formatPrice(fvg.bear.bottom)} و${formatPrice(fvg.bear.top)}.`);
   }
 
   // Regular divergence (price vs RSI) — one of the more reliable classic reversal signals
   if(divergence){
-    if(divergence.type === 'bullish'){ score++; votes.push(1); reasons.push({ bias: 'bull', text: divergence.desc }); }
-    else { score--; votes.push(-1); reasons.push({ bias: 'bear', text: divergence.desc }); }
+    if(divergence.type === 'bullish') vote(1, 'divergence', 'bull', divergence.desc);
+    else vote(-1, 'divergence', 'bear', divergence.desc);
   }
 
   // Market regime bonus: trust the signals that actually fit the current regime a bit more,
@@ -1970,16 +2114,36 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
   if(regime){
     const regimeAr = regime.regime === 'trend' ? 'اتجاهي (Trending)' : 'تذبذبي (Ranging)';
     if(regime.regime === 'trend' && structure && structure.event && structure.event.type === 'BOS'){
-      score += Math.sign(score) || (structure.event.bias === 'bull' ? 1 : -1);
-      votes.push(structure.event.bias === 'bull' ? 1 : -1);
-      reasons.push({ bias: 'neutral', text: `نظام السوق ${regimeAr} (كفاءة الحركة ${(regime.efficiencyRatio*100).toFixed(0)}%) — يدعم الاعتماد على كسر الهيكل والاستمرارية.` });
+      const dir = structure.event.bias === 'bull' ? 1 : -1;
+      score += Math.sign(score) || dir; // preserves the original bonus-scaling behavior
+      votes.push(dir); catVotes.push({ category: 'regime', dir });
+      reasons.push({ bias: 'neutral', text: `نظام السوق ${regimeAr} (كفاءة الحركة ${(regime.efficiencyRatio*100).toFixed(0)}%) — يدعم الاعتماد على كسر الهيكل والاستمرارية.`, category: 'regime' });
     } else if(regime.regime === 'range' && rsi != null && (rsi <= 25 || rsi >= 75)){
-      score += rsi <= 25 ? 1 : -1;
-      votes.push(rsi <= 25 ? 1 : -1);
-      reasons.push({ bias: 'neutral', text: `نظام السوق ${regimeAr} (كفاءة الحركة ${(regime.efficiencyRatio*100).toFixed(0)}%) — يدعم الاعتماد على تشبع RSI والارتداد من الأطراف.` });
+      const dir = rsi <= 25 ? 1 : -1;
+      score += dir; votes.push(dir); catVotes.push({ category: 'regime', dir });
+      reasons.push({ bias: 'neutral', text: `نظام السوق ${regimeAr} (كفاءة الحركة ${(regime.efficiencyRatio*100).toFixed(0)}%) — يدعم الاعتماد على تشبع RSI والارتداد من الأطراف.`, category: 'regime' });
     } else {
-      reasons.push({ bias: 'neutral', text: `نظام السوق الحالي: ${regimeAr} (كفاءة الحركة ${(regime.efficiencyRatio*100).toFixed(0)}%).` });
+      reasons.push({ bias: 'neutral', text: `نظام السوق الحالي: ${regimeAr} (كفاءة الحركة ${(regime.efficiencyRatio*100).toFixed(0)}%).`, category: 'regime' });
     }
+  }
+
+  // DXY (US Dollar Index) counter-filter — gold usually moves opposite the dollar.
+  if(dxy && dxy.trend !== 'flat'){
+    if(dxy.trend === 'down') vote(1, 'dxy', 'bull', `مؤشر الدولار (DXY ≈ ${dxy.value.toFixed(2)}) في اتجاه هابط — بيئة داعمة للذهب عادةً (علاقة عكسية).`);
+    else vote(-1, 'dxy', 'bear', `مؤشر الدولار (DXY ≈ ${dxy.value.toFixed(2)}) في اتجاه صاعد — ضغط مضاد على الذهب عادةً (علاقة عكسية).`);
+  } else if(dxy){
+    reasons.push({ bias: 'neutral', text: `مؤشر الدولار (DXY ≈ ${dxy.value.toFixed(2)}) شبه مستقر — لا يمثل ضغطًا واضحًا في أي اتجاه.`, category: 'dxy' });
+  }
+
+  // Volume confirmation (OBV) — only available on the Binance/PAXG source (real traded
+  // volume); honestly skipped on TwelveData/XAU-USD since forex OTC has no central volume.
+  if(obv){
+    const priceUp = obv.priceSlope > 0, priceDown = obv.priceSlope < 0;
+    const obvUp = obv.obvSlope > 0, obvDown = obv.obvSlope < 0;
+    if(priceUp && obvUp) vote(1, 'volume', 'bull', 'الحجم (OBV): تدفق حجم شرائي يؤكد الحركة الصاعدة الأخيرة في السعر.');
+    else if(priceDown && obvDown) vote(-1, 'volume', 'bear', 'الحجم (OBV): تدفق حجم بيعي يؤكد الحركة الهابطة الأخيرة في السعر.');
+    else if((priceUp && obvDown) || (priceDown && obvUp)) reasons.push({ bias: 'neutral', text: '⚠️ الحجم (OBV): لا يؤكد حركة السعر الأخيرة — احتمال ضعف داخلي في الحركة.', category: 'volume' });
+    else reasons.push({ bias: 'neutral', text: 'الحجم (OBV): متوازن دون إشارة واضحة.', category: 'volume' });
   }
 
   const pct = Math.max(-100, Math.min(100, Math.round((score / TOTAL_POSSIBLE_SIGNALS) * 100)));
@@ -1991,12 +2155,25 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
   else { label = 'محايد'; cls = 'rec-neutral'; }
 
   // -------- confidence / probability of success --------
+  // Self-learning weighting: categories that have historically been right more/less often
+  // (tracked in state.categoryStats from real closed signals) pull the confidence toward
+  // what's actually worked, instead of treating every indicator category as equally reliable
+  // forever. Falls back to weight 1 (fully neutral) for any category without enough history.
   const direction = score > 0 ? 1 : score < 0 ? -1 : 0;
+  const weightOf = (category) => (categoryWeights[category] && categoryWeights[category].sampleSize >= 5) ? categoryWeights[category].weight : 1;
   const directionalVotes = votes.filter(v => v !== 0);
-  const agreeing = directionalVotes.filter(v => v === direction).length;
-  let confidence = directionalVotes.length ? Math.round((agreeing / directionalVotes.length) * 100) : 50;
+  const weightedAgree = catVotes.filter(v => v.dir === direction).reduce((s, v) => s + weightOf(v.category), 0);
+  const weightedTotal = catVotes.reduce((s, v) => s + weightOf(v.category), 0);
+  let confidence = weightedTotal ? Math.round((weightedAgree / weightedTotal) * 100) : 50;
   const coverage = directionalVotes.length / TOTAL_POSSIBLE_SIGNALS;
   confidence = Math.round(confidence * (0.55 + 0.45 * coverage));
+
+  // "Why this %?" breakdown for the transparency panel — one row per category that actually
+  // voted, showing which direction it pointed and how much weight (learned or default) it carried.
+  const breakdown = catVotes.map(v => ({
+    category: v.category, dir: v.dir, weight: weightOf(v.category),
+    learned: Boolean(categoryWeights[v.category] && categoryWeights[v.category].sampleSize >= 5),
+  }));
 
   let eventWarning = null;
   if(upcomingEvent){
@@ -2143,7 +2320,7 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
 
   if(eventWarning) reasons.unshift({ bias: 'neutral', text: eventWarning });
 
-  return { score, pct, label, cls, reasons, levels, confidence: (isBuy || isSell) ? confidence : null, trafficLight, qualifies };
+  return { score, pct, label, cls, reasons, levels, confidence: (isBuy || isSell) ? confidence : null, trafficLight, qualifies, breakdown };
 }
 
 /* ===================== Rendering ===================== */
@@ -2306,6 +2483,37 @@ function renderAIAnalysis(text){
   if(!text){ box.classList.add('hidden'); return; }
   box.classList.remove('hidden');
   $('aiAnalysisText').textContent = text;
+}
+
+const CATEGORY_LABELS_AR = {
+  rsi: 'RSI', macd: 'MACD', fib: 'فيبوناتشي', sr: 'دعم/مقاومة', candle: 'نمط شمعة',
+  chartPattern: 'نمط فني', ema: 'متوسطات متحركة', vwap: 'VWAP', structure: 'هيكل السوق (SMC)',
+  smc_zone: 'Order Block/FVG', divergence: 'انحراف', regime: 'نظام السوق', dxy: 'مؤشر الدولار',
+  volume: 'الحجم (OBV)',
+};
+
+// Renders the "why this confidence %?" transparency panel: one bar per indicator category
+// that actually voted on THIS recommendation, showing which direction it leaned and how much
+// weight it carried (learned from real closed trades, or default 1.0 if not enough history).
+function renderConfidenceBreakdown(rec){
+  const toggle = $('confBreakdownToggle');
+  const panel = $('confBreakdownPanel');
+  if(!rec.breakdown || !rec.breakdown.length){
+    toggle.classList.add('hidden');
+    panel.classList.add('hidden');
+    return;
+  }
+  toggle.classList.remove('hidden');
+  const maxWeight = Math.max(...rec.breakdown.map(b => b.weight), 1);
+  panel.innerHTML = rec.breakdown.map(b => `
+    <div class="cbd-row">
+      <span class="cbd-label">${CATEGORY_LABELS_AR[b.category] || b.category}</span>
+      <span class="cbd-bar-track">
+        <span class="cbd-bar-fill ${b.dir > 0 ? 'bull' : 'bear'}" style="width:${Math.round((b.weight / maxWeight) * 100)}%"></span>
+      </span>
+      <span class="cbd-weight ${b.learned ? 'learned' : ''}">${b.dir > 0 ? '🟢' : '🔴'} ×${b.weight.toFixed(2)}${b.learned ? ' 🧠' : ''}</span>
+    </div>
+  `).join('') + `<p class="setting-hint" style="margin-top:8px;">🧠 = وزن متعلَّم من أداء حقيقي سابق لهذا التصنيف (بعد 5 صفقات مغلقة على الأقل). الوزن الافتراضي هو 1.00×.</p>`;
 }
 
 function renderReasons(reasons){
@@ -2510,6 +2718,7 @@ function renderAll({ asset, livePrice, changePercent, sourceLabel, candles, rsi,
   renderFinalSummary(rec, livePrice);
 
   renderReasons(rec.reasons);
+  renderConfidenceBreakdown(rec);
   renderSignalCards();
   updateRiskCalculator();
 
@@ -3563,7 +3772,23 @@ async function loadAsset(asset, fullAnalysis = true){
     }
 
     const upcomingEvent = getUpcomingHighImpactEvent();
-    const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, price: livePrice, upcomingEvent });
+
+    // DXY: only worth re-fetching on a full analysis (it's a daily-refresh macro filter
+    // anyway — see getDXYWithTrend's own 1h cache). Never let a DXY hiccup block analysis.
+    let dxy = null;
+    if(fullAnalysis){
+      try{ dxy = await getDXYWithTrend(); }catch(e){ dxy = null; }
+    } else {
+      dxy = state.frozenDxy || null;
+    }
+    if(fullAnalysis) state.frozenDxy = dxy;
+
+    // Volume/OBV confirmation — only real on the Binance/PAXG source (see computeOBV's own
+    // honesty check; it returns null if the candles carry no real volume).
+    const obv = computeOBV(candles);
+
+    const categoryWeights = getCategoryWeightMap();
+    const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, price: livePrice, upcomingEvent, categoryWeights });
 
     // Hard safety gate: never present an actionable trade recommendation while the
     // market is closed — the underlying data isn't live and no order could be placed anyway.
@@ -4114,6 +4339,9 @@ function init(){
 
   $('subscribePushBtn').addEventListener('click', subscribeToPush);
   $('resetIndicatorDefaults').addEventListener('click', resetIndicatorDefaults);
+  $('confBreakdownToggle').addEventListener('click', () => {
+    $('confBreakdownPanel').classList.toggle('hidden');
+  });
   $('chartModeToggle').addEventListener('click', () => {
     setChartMode(state.chartMode === 'tradingview' ? 'internal' : 'tradingview');
   });
