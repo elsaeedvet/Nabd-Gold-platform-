@@ -1086,7 +1086,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-07-09'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-07-10'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1689,6 +1689,9 @@ function computeSupportResistance(candles, price, lookback = 150, leftRight = 3,
     if(c.high === Math.max(...win.map(w => w.high))) pivots.push({ type: 'res', price: c.high });
     if(c.low === Math.min(...win.map(w => w.low))) pivots.push({ type: 'sup', price: c.low });
   }
+  // Clusters are now real ZONES (a top/bottom price range from the actual touches), not a
+  // single line — this both looks more like how a real chart reads (Dr Chart Mazen's "boxes"
+  // concept) and is more honest: price rarely respects a level to the exact cent.
   function cluster(arr){
     const sorted = [...arr].sort((a, b) => a.price - b.price);
     const clusters = [];
@@ -1697,19 +1700,28 @@ function computeSupportResistance(candles, price, lookback = 150, leftRight = 3,
       if(last && Math.abs(p.price - last.avg) / last.avg < tolerancePct){
         last.prices.push(p.price);
         last.avg = last.prices.reduce((a, b) => a + b, 0) / last.prices.length;
+        last.top = Math.max(last.top, p.price);
+        last.bottom = Math.min(last.bottom, p.price);
         last.strength++;
       } else {
-        clusters.push({ avg: p.price, prices: [p.price], strength: 1 });
+        clusters.push({ avg: p.price, prices: [p.price], top: p.price, bottom: p.price, strength: 1 });
       }
     });
     return clusters;
   }
 
-  // A resistance only makes sense above the current price, and a support only below it —
-  // otherwise price has already broken through it and it's no longer acting as that kind of level.
+  const rawSup = cluster(pivots.filter(p => p.type === 'sup'));
+  const rawRes = cluster(pivots.filter(p => p.type === 'res'));
+
+  // Role-reversal ("flip"): a support zone price has now fully closed below becomes a new
+  // resistance zone (old floor is now a ceiling), and vice versa — one of the more reliable,
+  // widely-used S/R concepts, and something a simple "is it above or below price" filter alone
+  // would otherwise just silently discard as irrelevant.
+  const flippedToRes = rawSup.filter(z => price < z.bottom * 0.999).map(z => ({ ...z, flipped: true }));
+  const flippedToSup = rawRes.filter(z => price > z.top * 1.001).map(z => ({ ...z, flipped: true }));
+
   const rankByRelevance = (clusters) => clusters
     .sort((a, b) => {
-      // prioritize levels with more touches, but heavily favor the ones closest to price
       const distA = Math.abs(a.avg - price) / price;
       const distB = Math.abs(b.avg - price) / price;
       return (b.strength - a.strength) || (distA - distB);
@@ -1717,8 +1729,8 @@ function computeSupportResistance(candles, price, lookback = 150, leftRight = 3,
     .slice(0, 3)
     .sort((a, b) => Math.abs(a.avg - price) - Math.abs(b.avg - price));
 
-  const allSup = cluster(pivots.filter(p => p.type === 'sup')).filter(c => c.avg < price);
-  const allRes = cluster(pivots.filter(p => p.type === 'res')).filter(c => c.avg > price);
+  const allSup = [...rawSup.filter(c => c.avg < price), ...flippedToSup];
+  const allRes = [...rawRes.filter(c => c.avg > price), ...flippedToRes];
 
   return {
     supports: rankByRelevance(allSup),
@@ -1950,6 +1962,132 @@ function detectChartPattern(candles, lookback = 90){
       return { name: 'مثلث هابط', nameEn: 'Descending Triangle', bias: 'bear',
         desc: `دعم أفقي قرب ${formatPrice(l2[1].price)} مع قمم منخفضة تباعًا — يرجّح كسر هبوطي.` };
     }
+    // Rectangle: both boundaries roughly flat — a range, not a trend; bias reflects which
+    // side price is currently pressing against.
+    if(flatRes && flatSup){
+      return { name: 'مستطيل', nameEn: 'Rectangle', bias: lastPrice > (h2[1].price + l2[1].price) / 2 ? 'bull' : 'bear',
+        desc: `نطاق تداول أفقي بين ${formatPrice(l2[1].price)} و${formatPrice(h2[1].price)} — يُنتظر كسر أحد الحدين لتحديد الاتجاه القادم.` };
+    }
+    // Rising Wedge: both boundaries rising, but converging (range narrowing) — bearish reversal.
+    const risingHighs = h2[1].price > h2[0].price * (1 + tol / 2);
+    if(risingHighs && risingLows){
+      const startRange = h2[0].price - l2[0].price, endRange = h2[1].price - l2[1].price;
+      if(endRange < startRange * 0.75){
+        return { name: 'الوتد الصاعد', nameEn: 'Rising Wedge', bias: 'bear',
+          desc: `قمم وقيعان مرتفعة لكن النطاق يضيّق تدريجيًا — نمط انعكاسي هبوطي كلاسيكي.` };
+      }
+    }
+    // Falling Wedge: both boundaries falling, converging — bullish reversal.
+    const fallingLows = l2[1].price < l2[0].price * (1 - tol / 2);
+    if(fallingHighs && fallingLows){
+      const startRange = h2[0].price - l2[0].price, endRange = h2[1].price - l2[1].price;
+      if(endRange < startRange * 0.75){
+        return { name: 'الوتد الهابط', nameEn: 'Falling Wedge', bias: 'bull',
+          desc: `قمم وقيعان منخفضة لكن النطاق يضيّق تدريجيًا — نمط انعكاسي صعودي كلاسيكي.` };
+      }
+    }
+  }
+  // Triple Top / Triple Bottom: like the double variant but with three roughly-equal extremes
+  if(highs.length >= 3){
+    const [h1, h2, h3] = highs.slice(-3);
+    if(Math.abs(h1.price - h2.price) / h1.price < tol && Math.abs(h2.price - h3.price) / h2.price < tol && h3.idx - h1.idx > 8){
+      const between = lows.filter(l => l.idx > h1.idx && l.idx < h3.idx);
+      if(between.length >= 2){
+        const neckline = Math.min(...between.map(l => l.price));
+        return { name: 'قمة ثلاثية', nameEn: 'Triple Top', bias: 'bear',
+          desc: `ثلاث قمم متقاربة عند ${formatPrice(h2.price)}، خط الرقبة عند ${formatPrice(neckline)}${lastPrice < neckline ? ' — تم كسره، تأكيد هبوطي.' : ' — يُنتظر كسره لتأكيد الانعكاس.'}` };
+      }
+    }
+  }
+  if(lows.length >= 3){
+    const [l1, l2, l3] = lows.slice(-3);
+    if(Math.abs(l1.price - l2.price) / l1.price < tol && Math.abs(l2.price - l3.price) / l2.price < tol && l3.idx - l1.idx > 8){
+      const between = highs.filter(h => h.idx > l1.idx && h.idx < l3.idx);
+      if(between.length >= 2){
+        const neckline = Math.max(...between.map(h => h.price));
+        return { name: 'قاع ثلاثي', nameEn: 'Triple Bottom', bias: 'bull',
+          desc: `ثلاث قيعان متقاربة عند ${formatPrice(l2.price)}، خط الرقبة عند ${formatPrice(neckline)}${lastPrice > neckline ? ' — تم كسره، تأكيد صعودي.' : ' — يُنتظر كسره لتأكيد الانعكاس.'}` };
+      }
+    }
+  }
+  // Bull/Bear Flag: a strong impulsive "pole" move followed by a brief, shallow, opposite-
+  // sloping consolidation channel — a continuation pattern, not a reversal.
+  {
+    const poleWindow = slice.slice(-40, -12);
+    const flagWindow = slice.slice(-12);
+    if(poleWindow.length >= 15 && flagWindow.length >= 8){
+      const poleMove = poleWindow[poleWindow.length - 1].close - poleWindow[0].close;
+      const poleRange = Math.max(...poleWindow.map(c => c.high)) - Math.min(...poleWindow.map(c => c.low));
+      const flagMove = flagWindow[flagWindow.length - 1].close - flagWindow[0].close;
+      const strongPoleUp = poleMove > poleRange * 0.55;
+      const strongPoleDown = poleMove < -poleRange * 0.55;
+      const flagPct = Math.abs(flagMove) / flagWindow[0].close;
+      if(strongPoleUp && flagMove <= 0 && flagPct < 0.012){
+        return { name: 'علم الصعود', nameEn: 'Bull Flag', bias: 'bull',
+          desc: `اندفاع صعودي قوي (العمود) يتبعه تماسك هابط أو جانبي طفيف (العلم) — نمط استمراري صعودي.` };
+      }
+      if(strongPoleDown && flagMove >= 0 && flagPct < 0.012){
+        return { name: 'علم الهبوط', nameEn: 'Bear Flag', bias: 'bear',
+          desc: `اندفاع هبوطي قوي (العمود) يتبعه تماسك صاعد أو جانبي طفيف (العلم) — نمط استمراري هبوطي.` };
+      }
+    }
+  }
+  // Symmetrical Triangle: highs falling AND lows rising at the same time (neither boundary
+  // flat) — a converging consolidation with no directional bias of its own; the eventual
+  // breakout side is what matters, so bias reflects which edge price is currently pressing.
+  if(highs.length >= 2 && lows.length >= 2){
+    const h2 = highs.slice(-2), l2 = lows.slice(-2);
+    const fallingHighs2 = h2[1].price < h2[0].price * (1 - tol / 2);
+    const risingLows2 = l2[1].price > l2[0].price * (1 + tol / 2);
+    const notFlat = Math.abs(h2[0].price - h2[1].price) / h2[0].price > tol && Math.abs(l2[0].price - l2[1].price) / l2[0].price > tol;
+    if(fallingHighs2 && risingLows2 && notFlat){
+      const mid = (h2[1].price + l2[1].price) / 2;
+      return { name: 'مثلث متماثل', nameEn: 'Symmetrical Triangle', bias: lastPrice > mid ? 'bull' : 'bear',
+        desc: `قمم منخفضة تباعًا وقيعان مرتفعة تباعًا يتقاربان نحو نقطة واحدة — يُنتظر اتجاه الكسر لتحديد الفرصة (السعر حاليًا ${lastPrice > mid ? 'أقرب لحافة الاختراق العلوية' : 'أقرب لحافة الاختراق السفلية'}).` };
+    }
+  }
+  // Diamond Top/Bottom: range first EXPANDS (broadening) then CONTRACTS (narrowing) — a rarer
+  // reversal pattern. Approximated here by comparing pivot range in the first vs second half
+  // of the lookback window.
+  if(highs.length >= 4 && lows.length >= 4){
+    const mid = Math.floor(slice.length / 2);
+    const firstHalf = slice.slice(0, mid), secondHalf = slice.slice(mid);
+    const rangeOf = w => Math.max(...w.map(c => c.high)) - Math.min(...w.map(c => c.low));
+    const firstRange = rangeOf(firstHalf.slice(0, Math.floor(firstHalf.length / 2)));
+    const midRange = rangeOf(firstHalf.slice(Math.floor(firstHalf.length / 2)));
+    const lastRange = rangeOf(secondHalf.slice(Math.floor(secondHalf.length / 2)));
+    const broadening = midRange > firstRange * 1.25;
+    const narrowing = lastRange < midRange * 0.7;
+    if(broadening && narrowing){
+      const priorTrendUp = secondHalf[0].close > firstHalf[0].close;
+      return { name: priorTrendUp ? 'نمط الماسة العلوي' : 'نمط الماسة السفلي', nameEn: priorTrendUp ? 'Diamond Top' : 'Diamond Bottom',
+        bias: priorTrendUp ? 'bear' : 'bull',
+        desc: `اتساع في نطاق التذبذب ثم انكماش تدريجي — نمط انعكاسي نادر نسبيًا يرجّح ${priorTrendUp ? 'نهاية الموجة الصاعدة' : 'نهاية الموجة الهابطة'}.` };
+    }
+  }
+  // Cup & Handle: a broad, rounded "U-shaped" decline-and-recovery (the cup) back to near its
+  // starting level (the rim), followed by a brief shallow pullback (the handle) — classic
+  // bullish continuation once price clears the rim again.
+  {
+    const cupWindow = slice.slice(-70, -12);
+    const handleWindow = slice.slice(-12);
+    if(cupWindow.length >= 40 && handleWindow.length >= 6){
+      const rimLeft = cupWindow[0].close;
+      const rimRight = cupWindow[cupWindow.length - 1].close;
+      const cupLow = Math.min(...cupWindow.map(c => c.low));
+      const cupLowIdx = cupWindow.findIndex(c => c.low === cupLow);
+      const rimsMatch = Math.abs(rimLeft - rimRight) / rimLeft < 0.02;
+      const lowIsCentered = cupLowIdx > cupWindow.length * 0.25 && cupLowIdx < cupWindow.length * 0.75;
+      const cupDepth = (rimLeft - cupLow) / rimLeft;
+      const deepEnough = cupDepth > 0.02 && cupDepth < 0.35;
+      const handleHigh = Math.max(...handleWindow.map(c => c.high));
+      const handleLow = Math.min(...handleWindow.map(c => c.low));
+      const handleShallow = (handleHigh - handleLow) / rimRight < cupDepth * 0.6 && handleLow > cupLow;
+      if(rimsMatch && lowIsCentered && deepEnough && handleShallow){
+        return { name: 'الكوب واليد', nameEn: 'Cup & Handle', bias: 'bull',
+          desc: `تكوّن دائري تدريجي (الكوب) بعمق ${(cupDepth*100).toFixed(1)}% ثم تماسك ضيق قرب الحافة (اليد) — نمط استمراري صعودي كلاسيكي، يُنتظر كسر ${formatPrice(Math.max(rimLeft, rimRight))}.` };
+      }
+    }
   }
   return null;
 }
@@ -2157,8 +2295,8 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
   if(sr){
     const nearSup = sr.supports.find(s => Math.abs(price - s.avg) / price < 0.005);
     const nearRes = sr.resistances.find(r => Math.abs(price - r.avg) / price < 0.005);
-    if(nearSup) vote(1, 'sr', 'bull', `الدعم: السعر على دعم قوي عند ${formatPrice(nearSup.avg)} (اختُبر ${nearSup.strength}×).`);
-    if(nearRes) vote(-1, 'sr', 'bear', `المقاومة: السعر على مقاومة قوية عند ${formatPrice(nearRes.avg)} (اختُبرت ${nearRes.strength}×).`);
+    if(nearSup) vote(1, 'sr', 'bull', `الدعم: السعر داخل منطقة دعم ${formatPrice(nearSup.bottom)}–${formatPrice(nearSup.top)} (اختُبرت ${nearSup.strength}×)${nearSup.flipped ? ' — منطقة منقلبة من مقاومة سابقة 🔄' : ''}.`);
+    if(nearRes) vote(-1, 'sr', 'bear', `المقاومة: السعر داخل منطقة مقاومة ${formatPrice(nearRes.bottom)}–${formatPrice(nearRes.top)} (اختُبرت ${nearRes.strength}×)${nearRes.flipped ? ' — منطقة منقلبة من دعم سابق 🔄' : ''}.`);
   }
 
   if(candle && candle.bias === 'bull') vote(1, 'candle', 'bull', `شمعة "${candle.name}" على فريم الساعة — إشارة صعودية قصيرة المدى.`);
@@ -2656,13 +2794,15 @@ function renderSRList(sr, price){
   sr.resistances.slice().reverse().forEach(r => {
     const li = document.createElement('li');
     li.className = 'level-item level-res';
-    li.innerHTML = `<span class="level-tag">مقاومة</span><span class="level-price">${formatPrice(r.avg)}</span><span class="level-strength">قوة ${r.strength}×</span>`;
+    const range = Math.abs(r.top - r.bottom) / r.avg > 0.0008 ? `${formatPrice(r.bottom)}–${formatPrice(r.top)}` : formatPrice(r.avg);
+    li.innerHTML = `<span class="level-tag">مقاومة${r.flipped ? ' 🔄' : ''}</span><span class="level-price">${range}</span><span class="level-strength">قوة ${r.strength}×</span>`;
     ul.appendChild(li);
   });
   sr.supports.forEach(s => {
     const li = document.createElement('li');
     li.className = 'level-item level-sup';
-    li.innerHTML = `<span class="level-tag">دعم</span><span class="level-price">${formatPrice(s.avg)}</span><span class="level-strength">قوة ${s.strength}×</span>`;
+    const range = Math.abs(s.top - s.bottom) / s.avg > 0.0008 ? `${formatPrice(s.bottom)}–${formatPrice(s.top)}` : formatPrice(s.avg);
+    li.innerHTML = `<span class="level-tag">دعم${s.flipped ? ' 🔄' : ''}</span><span class="level-price">${range}</span><span class="level-strength">قوة ${s.strength}×</span>`;
     ul.appendChild(li);
   });
 }
