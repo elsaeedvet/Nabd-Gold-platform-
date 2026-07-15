@@ -1086,7 +1086,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-07-08'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-07-09'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1731,34 +1731,40 @@ function candleRange(c){ return c.high - c.low; }
 function isBull(c){ return c.close > c.open; }
 function isBear(c){ return c.close < c.open; }
 
+function priorTrend(candles, startIdx, lookback = 6){
+  const before = candles.slice(Math.max(0, startIdx - lookback), startIdx);
+  if(before.length < 3) return 'neutral';
+  const first = before[0].close, last = before[before.length - 1].close;
+  if(last > first * 1.002) return 'up';
+  if(last < first * 0.998) return 'down';
+  return 'neutral';
+}
+
+// Expanded candlestick library: this covers ~24 of the most widely-documented classical
+// patterns (Bulkowski / standard Japanese candlestick literature — public-domain concepts,
+// not copied from any specific indicator). Checked from most specific (3-candle) down to
+// least specific (1-candle) so a rarer, higher-conviction pattern always wins over a generic
+// one when both technically match the same bars.
 function detectCandlePattern(candles){
   const n = candles.length;
-  if(n < 3) return null;
-  const c1 = candles[n - 1], c2 = candles[n - 2], c3 = candles[n - 3];
-  const r1 = candleRange(c1) || 0.0001;
+  if(n < 4) return null;
+  const c1 = candles[n - 1], c2 = candles[n - 2], c3 = candles[n - 3], c4 = candles[n - 4];
+  const r1 = candleRange(c1) || 0.0001, r2 = candleRange(c2) || 0.0001;
+  const b1 = bodySize(c1), b2 = bodySize(c2), b3 = bodySize(c3);
   const lowerWick1 = Math.min(c1.open, c1.close) - c1.low;
   const upperWick1 = c1.high - Math.max(c1.open, c1.close);
+  const trend3 = priorTrend(candles, n - 3);
+  const trend2 = priorTrend(candles, n - 2);
+  const trend1 = priorTrend(candles, n - 1);
 
-  if(bodySize(c1) <= r1 * 0.1){
-    return { name: 'دوجي (تردد)', bias: 'neutral' };
+  // ---------- 3-candle patterns ----------
+  if(isBear(c3) && b2 < b3 * 0.5 && isBull(c1) && c1.close > (c3.open + c3.close) / 2 && trend3 === 'down'){
+    const isDojiMid = bodySize(c2) <= candleRange(c2) * 0.1;
+    return { name: isDojiMid ? 'دوجي نجمة الصباح' : 'نجمة الصباح', bias: 'bull' };
   }
-  if(isBear(c2) && isBull(c1) && c1.open <= c2.close && c1.close >= c2.open && bodySize(c1) > bodySize(c2)){
-    return { name: 'ابتلاع صعودي', bias: 'bull' };
-  }
-  if(isBull(c2) && isBear(c1) && c1.open >= c2.close && c1.close <= c2.open && bodySize(c1) > bodySize(c2)){
-    return { name: 'ابتلاع هبوطي', bias: 'bear' };
-  }
-  if(lowerWick1 >= bodySize(c1) * 2 && upperWick1 <= bodySize(c1) * 0.5 && bodySize(c1) <= r1 * 0.35){
-    return { name: 'نموذج المطرقة', bias: 'bull' };
-  }
-  if(upperWick1 >= bodySize(c1) * 2 && lowerWick1 <= bodySize(c1) * 0.5 && bodySize(c1) <= r1 * 0.35){
-    return { name: 'النجمة الهابطة', bias: 'bear' };
-  }
-  if(isBear(c3) && bodySize(c2) < bodySize(c3) * 0.5 && isBull(c1) && c1.close > (c3.open + c3.close) / 2){
-    return { name: 'نجمة الصباح', bias: 'bull' };
-  }
-  if(isBull(c3) && bodySize(c2) < bodySize(c3) * 0.5 && isBear(c1) && c1.close < (c3.open + c3.close) / 2){
-    return { name: 'نجمة المساء', bias: 'bear' };
+  if(isBull(c3) && b2 < b3 * 0.5 && isBear(c1) && c1.close < (c3.open + c3.close) / 2 && trend3 === 'up'){
+    const isDojiMid = bodySize(c2) <= candleRange(c2) * 0.1;
+    return { name: isDojiMid ? 'دوجي نجمة المساء' : 'نجمة المساء', bias: 'bear' };
   }
   if(isBull(c3) && isBull(c2) && isBull(c1) && c2.close > c3.close && c1.close > c2.close && c2.open > c3.open && c1.open > c2.open){
     return { name: 'الجنود الثلاثة البيض', bias: 'bull' };
@@ -1766,6 +1772,99 @@ function detectCandlePattern(candles){
   if(isBear(c3) && isBear(c2) && isBear(c1) && c2.close < c3.close && c1.close < c2.close && c2.open < c3.open && c1.open < c2.open){
     return { name: 'الغربان الثلاثة السود', bias: 'bear' };
   }
+  // Three Inside Up/Down: harami (c2 inside c3's body) then c1 confirms beyond c3's open/close
+  if(isBear(c3) && isBull(c2) && c2.open > c3.close && c2.close < c3.open && isBull(c1) && c1.close > c3.open && trend3 === 'down'){
+    return { name: 'ثلاثة بالداخل للأعلى', bias: 'bull' };
+  }
+  if(isBull(c3) && isBear(c2) && c2.open < c3.close && c2.close > c3.open && isBear(c1) && c1.close < c3.open && trend3 === 'up'){
+    return { name: 'ثلاثة بالداخل للأسفل', bias: 'bear' };
+  }
+  // Three Outside Up/Down: engulfing (c2 engulfs c3) then c1 confirms further in same direction
+  if(isBear(c3) && isBull(c2) && c2.close > c3.open && c2.open < c3.close && isBull(c1) && c1.close > c2.close && trend3 === 'down'){
+    return { name: 'ثلاثة بالخارج للأعلى', bias: 'bull' };
+  }
+  if(isBull(c3) && isBear(c2) && c2.close < c3.open && c2.open > c3.close && isBear(c1) && c1.close < c2.close && trend3 === 'up'){
+    return { name: 'ثلاثة بالخارج للأسفل', bias: 'bear' };
+  }
+  // Bullish/Bearish Abandoned Baby: like morning/evening star but with real gaps (relaxed
+  // tolerance since true gaps are rare on 24h crypto/forex feeds)
+  if(isBear(c3) && bodySize(c2) <= candleRange(c2) * 0.12 && c2.high < c3.low * 1.0005 && isBull(c1) && c1.low > c2.high * 0.9995 && trend3 === 'down'){
+    return { name: 'الطفل المهجور الصاعد', bias: 'bull' };
+  }
+  if(isBull(c3) && bodySize(c2) <= candleRange(c2) * 0.12 && c2.low > c3.high * 0.9995 && isBear(c1) && c1.high < c2.low * 1.0005 && trend3 === 'up'){
+    return { name: 'الطفل المهجور الهابط', bias: 'bear' };
+  }
+  // Three Line Strike: three candles same direction, then a 4th candle fully reverses all three
+  if(n >= 4 && isBear(c4) && isBear(c3) && isBear(c2) && c3.close < c4.close && c2.close < c3.close && isBull(c1) && c1.close > c4.open && c1.open <= c2.close){
+    return { name: 'إضراب الخطوط الثلاثة الصاعد', bias: 'bull' };
+  }
+  if(n >= 4 && isBull(c4) && isBull(c3) && isBull(c2) && c3.close > c4.close && c2.close > c3.close && isBear(c1) && c1.close < c4.open && c1.open >= c2.close){
+    return { name: 'إضراب الخطوط الثلاثة الهابط', bias: 'bear' };
+  }
+  // Stick Sandwich: bearish, bullish, bearish (or reverse) with 1st & 3rd closing ~equal
+  if(isBear(c3) && isBull(c2) && isBear(c1) && Math.abs(c1.close - c3.close) / r1 < 0.15 && c2.close > c3.close){
+    return { name: 'شطيرة العصا الصاعدة', bias: 'bull' };
+  }
+  if(isBull(c3) && isBear(c2) && isBull(c1) && Math.abs(c1.close - c3.close) / r1 < 0.15 && c2.close < c3.close){
+    return { name: 'شطيرة العصا الهابطة', bias: 'bear' };
+  }
+
+  // ---------- 2-candle patterns ----------
+  if(isBear(c2) && isBull(c1) && c1.open <= c2.close && c1.close >= c2.open && b1 > b2){
+    return { name: 'ابتلاع صعودي', bias: 'bull' };
+  }
+  if(isBull(c2) && isBear(c1) && c1.open >= c2.close && c1.close <= c2.open && b1 > b2){
+    return { name: 'ابتلاع هبوطي', bias: 'bear' };
+  }
+  // Piercing Line / Dark Cloud Cover: opens beyond prior extreme, closes past the midpoint
+  if(isBear(c2) && isBull(c1) && c1.open < c2.low && c1.close > (c2.open + c2.close) / 2 && c1.close < c2.open && trend2 === 'down'){
+    return { name: 'الخط الثاقب', bias: 'bull' };
+  }
+  if(isBull(c2) && isBear(c1) && c1.open > c2.high && c1.close < (c2.open + c2.close) / 2 && c1.close > c2.open && trend2 === 'up'){
+    return { name: 'غطاء السحابة الداكنة', bias: 'bear' };
+  }
+  // Harami: small candle contained within the prior candle's real body, opposite color
+  if(isBear(c2) && isBull(c1) && c1.open > c2.close && c1.close < c2.open && b1 < b2 * 0.6 && trend2 === 'down'){
+    return { name: 'هارامي صاعد', bias: 'bull' };
+  }
+  if(isBull(c2) && isBear(c1) && c1.open < c2.close && c1.close > c2.open && b1 < b2 * 0.6 && trend2 === 'up'){
+    return { name: 'هارامي هابط', bias: 'bear' };
+  }
+  // Kicker: a gap-opening full reversal of the prior candle's direction (relaxed gap for 24h markets)
+  if(isBear(c2) && isBull(c1) && c1.open >= c2.open * 0.999 && c1.close > c2.open && trend2 === 'down' && b1 > r2 * 0.6){
+    return { name: 'الراكل الصاعد', bias: 'bull' };
+  }
+  if(isBull(c2) && isBear(c1) && c1.open <= c2.open * 1.001 && c1.close < c2.open && trend2 === 'up' && b1 > r2 * 0.6){
+    return { name: 'الراكل الهابط', bias: 'bear' };
+  }
+  // Tweezer Top/Bottom: two candles sharing almost the same high (top) or low (bottom)
+  if(Math.abs(c1.high - c2.high) / r2 < 0.08 && isBull(c2) && isBear(c1) && trend2 === 'up'){
+    return { name: 'ملقط القمة', bias: 'bear' };
+  }
+  if(Math.abs(c1.low - c2.low) / r2 < 0.08 && isBear(c2) && isBull(c1) && trend2 === 'down'){
+    return { name: 'ملقط القاع', bias: 'bull' };
+  }
+
+  // ---------- 1-candle patterns ----------
+  if(b1 <= r1 * 0.06){
+    if(lowerWick1 > r1 * 0.6 && upperWick1 < r1 * 0.15) return { name: 'دوجي اليعسوب', bias: 'bull' };
+    if(upperWick1 > r1 * 0.6 && lowerWick1 < r1 * 0.15) return { name: 'دوجي شاهد القبر', bias: 'bear' };
+    if(lowerWick1 > r1 * 0.35 && upperWick1 > r1 * 0.35) return { name: 'دوجي طويل الأرجل (تردد)', bias: 'neutral' };
+    return { name: 'دوجي (تردد)', bias: 'neutral' };
+  }
+  if(b1 >= r1 * 0.92){
+    return { name: isBull(c1) ? 'ماروبوزو صاعد' : 'ماروبوزو هابط', bias: isBull(c1) ? 'bull' : 'bear' };
+  }
+  if(lowerWick1 >= b1 * 2 && upperWick1 <= b1 * 0.5 && b1 <= r1 * 0.35){
+    return { name: trend1 === 'down' ? 'نموذج المطرقة' : (trend1 === 'up' ? 'الرجل المعلق' : 'نموذج مطرقة'), bias: trend1 === 'up' ? 'bear' : 'bull' };
+  }
+  if(upperWick1 >= b1 * 2 && lowerWick1 <= b1 * 0.5 && b1 <= r1 * 0.35){
+    return { name: trend1 === 'up' ? 'النجمة الهابطة' : (trend1 === 'down' ? 'المطرقة المقلوبة' : 'نجمة'), bias: trend1 === 'up' ? 'bear' : 'bull' };
+  }
+  if(upperWick1 > b1 * 0.8 && lowerWick1 > b1 * 0.8 && b1 <= r1 * 0.3){
+    return { name: 'قمة الغزل (تردد)', bias: 'neutral' };
+  }
+
   return { name: 'لا يوجد نمط واضح حاليًا', bias: 'neutral' };
 }
 
