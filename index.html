@@ -316,6 +316,27 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
   border-radius: var(--radius-lg); padding: 16px 18px; margin-bottom:14px;
 }
 .reasons-card h2{ font-size:15px; margin-bottom:10px; }
+
+.exec-summary-card{
+  background: var(--surface); border:1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 16px 18px; margin-bottom:14px;
+}
+.exec-summary-card h2{ font-size:15px; margin-bottom:10px; }
+.exec-summary-list{ display:flex; flex-direction:column; }
+.exec-row{
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  padding:9px 0; border-bottom:1px solid var(--border); font-size:12px;
+}
+.exec-row:last-child{ border-bottom:none; }
+.exec-row.exec-final{ padding-top:12px; margin-top:4px; border-top:2px solid var(--gold); border-bottom:none; }
+.exec-label{ color: var(--text-dim); flex-shrink:0; }
+.exec-detail{ flex:1; text-align:center; font-size:11px; color: var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:0 6px; }
+.exec-verdict{ flex-shrink:0; font-weight:800; font-size:11.5px; padding:3px 10px; border-radius:20px; white-space:nowrap; }
+.exec-verdict.v-bull{ background: rgba(0,229,160,.12); color: var(--bull); }
+.exec-verdict.v-bear{ background: rgba(255,77,94,.12); color: var(--bear); }
+.exec-verdict.v-neutral{ background: rgba(255,255,255,.06); color: var(--text-dim); }
+.exec-verdict.v-na{ background: rgba(255,255,255,.03); color: var(--text-dim); font-weight:400; font-size:10.5px; }
+.exec-row.exec-final .exec-verdict{ font-size:14px; padding:5px 16px; }
 .reasons-list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:9px; }
 .reasons-list li{
   font-size:13.5px; line-height:1.6; padding-right:16px; position:relative; color: var(--text);
@@ -837,6 +858,13 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
       </div>
     </section>
 
+    <section class="exec-summary-card">
+      <h2>📋 الخلاصة الشاملة</h2>
+      <div id="execSummaryList" class="exec-summary-list">
+        <div class="exec-row"><span class="exec-label">جارٍ التحليل…</span></div>
+      </div>
+    </section>
+
     <section class="reasons-card">
       <div class="reasons-header">
         <h2>سبب التوصية</h2>
@@ -1086,7 +1114,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-07-10'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-07-11'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1105,6 +1133,8 @@ const state = {
   frozenFVG: { gold: null },
   frozenHtfTrend: { gold: null },
   frozenDxy: null,
+  frozenTrend5m: null,
+  frozenTrend1d: null,
   refreshTimer: null,
   calendarTimer: null,
   calendarRetryTimer: null,
@@ -2116,6 +2146,33 @@ function computeHigherTFTrend(htfCandles){
   return { trend, ema20, ema50, price };
 }
 
+// Generic multi-timeframe trend fetch for the "الخلاصة الشاملة" (executive summary) panel —
+// shows 5min/1h/4h/1day trend side by side. Cached per-timeframe so this never re-spends
+// TwelveData credits more than necessary (see cacheMinutes), and 5-minute data is skipped
+// entirely on TwelveData (not worth the extra credits for a scalping-only timeframe on an
+// OTC feed) rather than faked.
+async function getTrendForTimeframe(binanceInterval, twelveDataInterval, cacheMinutes, stateKey){
+  const now = Date.now();
+  const frozen = state[stateKey];
+  if(frozen && (now - frozen.fetchedAt) < cacheMinutes * 60000) return frozen.data;
+
+  if(state.goldSource === 'twelvedata' && state.apiKey){
+    if(!twelveDataInterval) return frozen ? frozen.data : { trend: 'unavailable' };
+    try{
+      const candles = await fetchTwelveDataSeries(state.apiKey, twelveDataInterval, 150);
+      const data = computeHigherTFTrend(candles);
+      state[stateKey] = { data, fetchedAt: now };
+      return data;
+    }catch(e){ return frozen ? frozen.data : null; }
+  }
+  try{
+    const candles = await fetchBinanceKlines(SYMBOLS.goldPaxg, binanceInterval, 200);
+    const data = computeHigherTFTrend(candles);
+    state[stateKey] = { data, fetchedAt: now };
+    return data;
+  }catch(e){ return frozen ? frozen.data : null; }
+}
+
 /* ===================== SMC / ICT module ===================== */
 
 function detectMarketStructure(candles, lookback = 80){
@@ -2289,6 +2346,8 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
     if(distPct < 0.006){
       if(fib.trend === 'up') vote(1, 'fib', 'bull', `فيبوناتشي: السعر عند مستوى ${(nearest.pct*100).toFixed(1)}% كدعم ضمن اتجاه صاعد.`);
       else vote(-1, 'fib', 'bear', `فيبوناتشي: السعر عند مستوى ${(nearest.pct*100).toFixed(1)}% كمقاومة ضمن اتجاه هابط.`);
+    } else {
+      reasons.push({ bias: 'neutral', text: `فيبوناتشي: السعر ليس قريبًا حاليًا من أي مستوى رئيسي (أقرب مستوى ${(nearest.pct*100).toFixed(1)}% يبعد ${(distPct*100).toFixed(2)}%).`, category: 'fib' });
     }
   }
 
@@ -2297,13 +2356,16 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
     const nearRes = sr.resistances.find(r => Math.abs(price - r.avg) / price < 0.005);
     if(nearSup) vote(1, 'sr', 'bull', `الدعم: السعر داخل منطقة دعم ${formatPrice(nearSup.bottom)}–${formatPrice(nearSup.top)} (اختُبرت ${nearSup.strength}×)${nearSup.flipped ? ' — منطقة منقلبة من مقاومة سابقة 🔄' : ''}.`);
     if(nearRes) vote(-1, 'sr', 'bear', `المقاومة: السعر داخل منطقة مقاومة ${formatPrice(nearRes.bottom)}–${formatPrice(nearRes.top)} (اختُبرت ${nearRes.strength}×)${nearRes.flipped ? ' — منطقة منقلبة من دعم سابق 🔄' : ''}.`);
+    if(!nearSup && !nearRes) reasons.push({ bias: 'neutral', text: 'الدعم/المقاومة: السعر حاليًا بعيد عن أقرب منطقة دعم أو مقاومة معروفة.', category: 'sr' });
   }
 
   if(candle && candle.bias === 'bull') vote(1, 'candle', 'bull', `شمعة "${candle.name}" على فريم الساعة — إشارة صعودية قصيرة المدى.`);
   else if(candle && candle.bias === 'bear') vote(-1, 'candle', 'bear', `شمعة "${candle.name}" على فريم الساعة — إشارة هبوطية قصيرة المدى.`);
+  else if(candle) reasons.push({ bias: 'neutral', text: `نمط الشمعة الحالي: "${candle.name}" — بدون انحياز اتجاهي واضح.`, category: 'candle' });
 
   if(chartPattern && chartPattern.bias === 'bull') vote(1, 'chartPattern', 'bull', `نمط فني: "${chartPattern.name}" — ${chartPattern.desc}`);
   else if(chartPattern && chartPattern.bias === 'bear') vote(-1, 'chartPattern', 'bear', `نمط فني: "${chartPattern.name}" — ${chartPattern.desc}`);
+  else reasons.push({ bias: 'neutral', text: chartPattern ? `نمط فني: "${chartPattern.name}" — بدون انحياز واضح حاليًا.` : 'لا يوجد نمط فني واضح حاليًا على الرسم.', category: 'chartPattern' });
 
   // EMA 20/50/200 trend stack
   if(ema && ema.ema50 != null && ema.ema200 != null){
@@ -2326,6 +2388,8 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
   if(structure && structure.event){
     if(structure.event.bias === 'bull') vote(1, 'structure', 'bull', `${structure.event.type === 'BOS' ? 'SMC' : 'SMC ⚠️'}: ${structure.event.desc}`);
     else vote(-1, 'structure', 'bear', `${structure.event.type === 'BOS' ? 'SMC' : 'SMC ⚠️'}: ${structure.event.desc}`);
+  } else if(structure){
+    reasons.push({ bias: 'neutral', text: `هيكل السوق (SMC): لا يوجد كسر هيكل (BOS/CHOCH) واضح حاليًا — الاتجاه العام ${structure.trend === 'up' ? 'صاعد' : structure.trend === 'down' ? 'هابط' : 'محايد'}.`, category: 'structure' });
   }
 
   // Order Blocks + Fair Value Gaps (price currently reacting inside a zone)
@@ -2336,9 +2400,10 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
     if(inZone(orderBlocks.bear)){ vote(-1, 'smc_zone', 'bear', `Order Block بيعي نشط بين ${formatPrice(orderBlocks.bear.bottom)} و${formatPrice(orderBlocks.bear.top)} — منطقة اهتمام مؤسسي للبيع.`); smcZoneVoted = true; }
   }
   if(!smcZoneVoted && fvg){
-    if(inZone(fvg.bull)) vote(1, 'smc_zone', 'bull', `فجوة سيولة عادلة (FVG) صاعدة غير مغلقة بين ${formatPrice(fvg.bull.bottom)} و${formatPrice(fvg.bull.top)}.`);
-    else if(inZone(fvg.bear)) vote(-1, 'smc_zone', 'bear', `فجوة سيولة عادلة (FVG) هابطة غير مغلقة بين ${formatPrice(fvg.bear.bottom)} و${formatPrice(fvg.bear.top)}.`);
+    if(inZone(fvg.bull)){ vote(1, 'smc_zone', 'bull', `فجوة سيولة عادلة (FVG) صاعدة غير مغلقة بين ${formatPrice(fvg.bull.bottom)} و${formatPrice(fvg.bull.top)}.`); smcZoneVoted = true; }
+    else if(inZone(fvg.bear)){ vote(-1, 'smc_zone', 'bear', `فجوة سيولة عادلة (FVG) هابطة غير مغلقة بين ${formatPrice(fvg.bear.bottom)} و${formatPrice(fvg.bear.top)}.`); smcZoneVoted = true; }
   }
+  if(!smcZoneVoted) reasons.push({ bias: 'neutral', text: 'Order Block/FVG: السعر ليس داخل أي منطقة اهتمام مؤسسي نشطة حاليًا.', category: 'smc_zone' });
 
   // Regular divergence (price vs RSI) — one of the more reliable classic reversal signals
   if(divergence){
@@ -2720,6 +2785,80 @@ function renderAIAnalysis(text){
   if(!text){ box.classList.add('hidden'); return; }
   box.classList.remove('hidden');
   $('aiAnalysisText').textContent = text;
+}
+
+const TREND_LABEL_AR = { up: 'صاعد 📈', down: 'هابط 📉', neutral: 'عرضي/متذبذب ↔️', unavailable: 'غير متاح' };
+const VERDICT_FROM_TREND = { up: 'v-bull', down: 'v-bear', neutral: 'v-neutral', unavailable: 'v-na' };
+const VERDICT_TEXT_FROM_TREND = { up: 'شراء', down: 'بيع', neutral: 'حياد', unavailable: '—' };
+
+function biasToVerdict(bias){
+  if(bias === 'bull') return { cls: 'v-bull', text: 'شراء' };
+  if(bias === 'bear') return { cls: 'v-bear', text: 'بيع' };
+  return { cls: 'v-neutral', text: 'حياد' };
+}
+
+// The "خلاصة الخلاصة" panel: every timeframe, every indicator category, and the S/R test
+// strength, each with its own plain verdict (شراء/بيع/حياد) right next to it — then the final
+// overall call at the bottom. This mirrors rec.reasons (which already carries a category +
+// bias per indicator) rather than duplicating the scoring logic.
+function renderExecutiveSummary(rec, { trend5m, trend1h, trend4h, trend1d, sr, structure }){
+  const list = $('execSummaryList');
+  const rows = [];
+
+  const trendRow = (label, t) => {
+    const trend = t ? t.trend : 'unavailable';
+    rows.push({ label, detail: TREND_LABEL_AR[trend] || '—', cls: VERDICT_FROM_TREND[trend] || 'v-na', text: VERDICT_TEXT_FROM_TREND[trend] || '—' });
+  };
+  trendRow('الاتجاه (5 دقائق)', trend5m);
+  trendRow('الاتجاه (ساعة)', trend1h);
+  trendRow('الاتجاه (4 ساعات)', trend4h);
+  trendRow('الاتجاه (يومي)', trend1d);
+
+  // Support/resistance test strength — nearest zone on each side with its touch count.
+  const nearestSup = sr && sr.supports[0];
+  const nearestRes = sr && sr.resistances[0];
+  if(nearestSup || nearestRes){
+    const parts = [];
+    if(nearestSup) parts.push(`دعم ${formatPrice(nearestSup.bottom)}–${formatPrice(nearestSup.top)} (${nearestSup.strength}×)`);
+    if(nearestRes) parts.push(`مقاومة ${formatPrice(nearestRes.bottom)}–${formatPrice(nearestRes.top)} (${nearestRes.strength}×)`);
+    rows.push({ label: 'قوة اختبار الدعم/المقاومة', detail: parts.join(' | '), cls: 'v-neutral', text: 'معلومة' });
+  }
+
+  // One row per indicator category, in a fixed, readable order — reusing the exact bias
+  // already computed for that category in rec.reasons (single source of truth, no re-deriving).
+  const order = ['rsi','macd','fib','sr','candle','chartPattern','ema','vwap','structure','smc_zone','divergence','regime','dxy','volume'];
+  order.forEach(cat => {
+    const reason = rec.reasons.find(r => r.category === cat);
+    if(!reason) return;
+    const v = biasToVerdict(reason.bias);
+    rows.push({ label: CATEGORY_LABELS_AR[cat] || cat, detail: reason.text, cls: v.cls, text: v.text });
+  });
+
+  // SMC status specifically called out, even though 'structure' above already covers it —
+  // this row adds the raw market-structure trend (independent of any single BOS/CHOCH event).
+  if(structure && structure.trend && structure.trend !== 'neutral'){
+    const v = structure.trend === 'up' ? { cls: 'v-bull', text: 'شراء' } : { cls: 'v-bear', text: 'بيع' };
+    rows.push({ label: 'حالة SMC العامة', detail: `هيكل السوق ${structure.trend === 'up' ? 'صاعد' : 'هابط'} حاليًا`, cls: v.cls, text: v.text });
+  }
+
+  list.innerHTML = rows.map(r => `
+    <div class="exec-row">
+      <span class="exec-label">${r.label}</span>
+      <span class="exec-detail">${escapeHtml(r.detail)}</span>
+      <span class="exec-verdict ${r.cls}">${r.text}</span>
+    </div>
+  `).join('');
+
+  // Final overall verdict — exactly what buildRecommendation already decided, just surfaced
+  // clearly at the bottom of the same panel instead of only living in the traffic light.
+  const finalCls = rec.score > 0 ? 'v-bull' : rec.score < 0 ? 'v-bear' : 'v-neutral';
+  const finalText = rec.marketClosed ? 'السوق مغلق' : (rec.label || 'انتظار');
+  list.innerHTML += `
+    <div class="exec-row exec-final">
+      <span class="exec-label" style="font-weight:800; color:var(--text);">🏁 الخلاصة النهائية</span>
+      <span class="exec-detail">${rec.confidence != null ? `الثقة: ${rec.confidence}%` : ''}</span>
+      <span class="exec-verdict ${finalCls}">${finalText}</span>
+    </div>`;
 }
 
 const CATEGORY_LABELS_AR = {
@@ -4026,8 +4165,23 @@ async function loadAsset(asset, fullAnalysis = true){
     // honesty check; it returns null if the candles carry no real volume).
     const obv = computeOBV(candles);
 
+    // Multi-timeframe trend rows for the "الخلاصة الشاملة" panel (5min/1h/4h/1day). Only
+    // fetched on a full analysis, same conservative caching approach as DXY/HTF above.
+    let trend5m, trend1d;
+    if(fullAnalysis){
+      trend5m = await getTrendForTimeframe('5m', null, 15, 'frozenTrend5m').catch(() => null);
+      trend1d = await getTrendForTimeframe('1d', '1day', 60, 'frozenTrend1d').catch(() => null);
+    } else {
+      trend5m = state.frozenTrend5m ? state.frozenTrend5m.data : null;
+      trend1d = state.frozenTrend1d ? state.frozenTrend1d.data : null;
+    }
+    const trend1h = (ema && ema.ema50 != null)
+      ? { trend: (livePrice > ema.ema20 && ema.ema20 > ema.ema50) ? 'up' : (livePrice < ema.ema20 && ema.ema20 < ema.ema50) ? 'down' : 'neutral' }
+      : null;
+
     const categoryWeights = getCategoryWeightMap();
     const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, price: livePrice, upcomingEvent, categoryWeights });
+    renderExecutiveSummary(rec, { trend5m, trend1h, trend4h: htfTrend, trend1d, sr, structure });
 
     // Hard safety gate: never present an actionable trade recommendation while the
     // market is closed — the underlying data isn't live and no order could be placed anyway.
