@@ -1109,6 +1109,15 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
     </div>
 
     <div class="setting-group">
+      <label class="setting-label">🎯 الحد الأدنى لنسبة الثقة</label>
+      <p class="setting-hint">أي توصية بثقة أقل من الرقم ده هتفضل معروضة للدراسة بس، ومش هتتحول لصفقة متابَعة ولا هتوصلك إشعار دخول بيها. حطّه 0 لإلغاء الفلتر تمامًا.</p>
+      <div style="display:flex; align-items:center; gap:10px;">
+        <input type="range" id="minConfidenceSlider" min="0" max="90" step="5" style="flex:1;">
+        <span id="minConfidenceValue" style="font-family:var(--font-mono); font-size:13px; color:var(--gold-glow); min-width:44px; text-align:center;">0%</span>
+      </div>
+    </div>
+
+    <div class="setting-group">
       <label class="setting-label">🔔 الإشعارات الحقيقية (Push Server)</label>
       <p class="setting-hint">لو عندك سيرفر نبض الخلفي شغال، حط رابطه هنا عشان توصلك إشعارات حقيقية حتى لو التطبيق مقفول (طالما الموبايل مش قافل التطبيق بالكامل من الخلفية).</p>
       <input type="text" id="backendUrlInput" class="text-input" placeholder="https://your-app.onrender.com" style="width:100%;margin-bottom:8px;">
@@ -1147,12 +1156,13 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-07-13'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-18-01'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
   goldSource: localStorage.getItem('nabd_goldSource') || 'paxg',
   backendUrl: localStorage.getItem('nabd_backendUrl') || '',
+  minConfidence: parseInt(localStorage.getItem('nabd_minConfidence') || '0', 10),
   apiKey: localStorage.getItem('nabd_twelveDataKey') || '',
   aiKey: localStorage.getItem('nabd_aiKey') || '',
   candles: { gold: [] },
@@ -1253,6 +1263,14 @@ function recordCategoryOutcomes(categories, isWin){
 
 function addSignalIfNew(rec){
   if(!rec.levels) return;
+  // Minimum-confidence gate: if the user set a threshold (e.g. "ignore anything under 65%"),
+  // a lower-confidence setup still shows in the analysis/exec-summary for study, but never
+  // becomes an actual tracked signal card or fires an entry notification.
+  if(state.minConfidence > 0 && rec.confidence != null && rec.confidence < state.minConfidence){
+    state.lastSuppressedByConfidence = { confidence: rec.confidence, threshold: state.minConfidence };
+    return;
+  }
+  state.lastSuppressedByConfidence = null;
   const { direction, entry, stop, tp1, tp2, tp3 } = rec.levels;
   const dupe = state.signals.find(s =>
     s.status === 'open' && s.direction === direction &&
@@ -2913,6 +2931,10 @@ function renderExecutiveSummary(rec, { trend5m, trend1h, trend4h, trend1d, sr, s
     const strengthWord = Math.abs(rec.score) >= 4 ? 'قوي' : '';
     plainSummary = `الذهب في اتجاه ${dirWord} ${strengthWord} ${trendPhrase}${srPhrase} — بثقة ${rec.confidence}%، ${rec.score > 0 ? 'فرصة شراء محتملة' : 'فرصة بيع محتملة'}.`;
   }
+  if(state.lastSuppressedByConfidence){
+    const s = state.lastSuppressedByConfidence;
+    plainSummary += ` ⚠️ ملحوظة: تم تجاهل فتح توصية فعلية لأن ثقتها (${s.confidence}%) أقل من الحد الأدنى اللي حددته (${s.threshold}%).`;
+  }
   $('execPlainSummary').textContent = plainSummary;
 
   // ---- comparison vs the previous snapshot ----
@@ -4426,6 +4448,8 @@ function openSettings(){
   $('apiKeyRow').classList.toggle('hidden', state.goldSource !== 'twelvedata');
   $('aiKeyInput').value = state.aiKey;
   $('backendUrlInput').value = state.backendUrl;
+  $('minConfidenceSlider').value = state.minConfidence;
+  $('minConfidenceValue').textContent = state.minConfidence + '%';
   const iset = state.indicatorSettings;
   $('setRsiPeriod').value = iset.rsiPeriod;
   $('setEmaFast').value = iset.emaFast;
@@ -4453,6 +4477,8 @@ function saveSettings(){
   state.aiKey = aiKey;
   state.backendUrl = $('backendUrlInput').value.trim().replace(/\/$/, '');
   localStorage.setItem('nabd_backendUrl', state.backendUrl);
+  state.minConfidence = parseInt($('minConfidenceSlider').value, 10) || 0;
+  localStorage.setItem('nabd_minConfidence', String(state.minConfidence));
   localStorage.setItem('nabd_goldSource', selected);
   localStorage.setItem('nabd_twelveDataKey', key);
   localStorage.setItem('nabd_aiKey', aiKey);
@@ -4886,6 +4912,9 @@ function init(){
   });
 
   $('subscribePushBtn').addEventListener('click', subscribeToPush);
+  $('minConfidenceSlider').addEventListener('input', e => {
+    $('minConfidenceValue').textContent = e.target.value + '%';
+  });
   $('resetIndicatorDefaults').addEventListener('click', resetIndicatorDefaults);
   $('confBreakdownToggle').addEventListener('click', () => {
     $('confBreakdownPanel').classList.toggle('hidden');
