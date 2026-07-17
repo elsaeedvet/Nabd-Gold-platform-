@@ -324,13 +324,14 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 .exec-summary-card h2{ font-size:15px; margin-bottom:10px; }
 .exec-summary-list{ display:flex; flex-direction:column; }
 .exec-row{
-  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  display:flex; flex-direction:column; gap:4px;
   padding:9px 0; border-bottom:1px solid var(--border); font-size:12px;
 }
 .exec-row:last-child{ border-bottom:none; }
 .exec-row.exec-final{ padding-top:12px; margin-top:4px; border-top:2px solid var(--gold); border-bottom:none; }
+.exec-row-top{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .exec-label{ color: var(--text-dim); flex-shrink:0; }
-.exec-detail{ flex:1; text-align:center; font-size:11px; color: var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:0 6px; }
+.exec-detail{ flex:none; text-align:right; font-size:11px; line-height:1.6; color: var(--text-dim); white-space:normal; word-break:break-word; padding:0; }
 .exec-verdict{ flex-shrink:0; font-weight:800; font-size:11.5px; padding:3px 10px; border-radius:20px; white-space:nowrap; }
 .exec-verdict.v-bull{ background: rgba(0,229,160,.12); color: var(--bull); }
 .exec-verdict.v-bear{ background: rgba(255,77,94,.12); color: var(--bear); }
@@ -1146,7 +1147,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-07-12'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-07-13'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -2875,9 +2876,11 @@ function renderExecutiveSummary(rec, { trend5m, trend1h, trend4h, trend1d, sr, s
 
   list.innerHTML = rows.map(r => `
     <div class="exec-row">
-      <span class="exec-label">${r.label}</span>
+      <div class="exec-row-top">
+        <span class="exec-label">${r.label}</span>
+        <span class="exec-verdict ${r.cls}">${r.text}</span>
+      </div>
       <span class="exec-detail">${escapeHtml(r.detail)}</span>
-      <span class="exec-verdict ${r.cls}">${r.text}</span>
     </div>
   `).join('');
 
@@ -2887,9 +2890,11 @@ function renderExecutiveSummary(rec, { trend5m, trend1h, trend4h, trend1d, sr, s
   const finalText = rec.marketClosed ? 'السوق مغلق' : (rec.label || 'انتظار');
   list.innerHTML += `
     <div class="exec-row exec-final">
-      <span class="exec-label" style="font-weight:800; color:var(--text);">🏁 الخلاصة النهائية</span>
+      <div class="exec-row-top">
+        <span class="exec-label" style="font-weight:800; color:var(--text);">🏁 الخلاصة النهائية</span>
+        <span class="exec-verdict ${finalCls}">${finalText}</span>
+      </div>
       <span class="exec-detail">${rec.confidence != null ? `الثقة: ${rec.confidence}%` : ''}</span>
-      <span class="exec-verdict ${finalCls}">${finalText}</span>
     </div>`;
 
   // ---- plain one-sentence summary for beginners ----
