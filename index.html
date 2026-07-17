@@ -337,6 +337,20 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 .exec-verdict.v-neutral{ background: rgba(255,255,255,.06); color: var(--text-dim); }
 .exec-verdict.v-na{ background: rgba(255,255,255,.03); color: var(--text-dim); font-weight:400; font-size:10.5px; }
 .exec-row.exec-final .exec-verdict{ font-size:14px; padding:5px 16px; }
+
+.exec-summary-header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+.exec-summary-header h2{ margin-bottom:0; }
+.exec-summary-header .ghost-btn{ font-size:10.5px; padding:6px 10px; width:auto; }
+.exec-plain-summary{
+  font-size:12.5px; line-height:1.7; color: var(--text); background: var(--surface-2);
+  border-radius:10px; padding:10px 12px; margin-bottom:8px; border-inline-start:3px solid var(--gold);
+}
+.exec-change-badge{
+  font-size:11px; padding:6px 10px; border-radius:8px; margin-bottom:8px;
+  background: rgba(240,185,11,.08); color: var(--gold-glow); border:1px solid var(--gold);
+}
+.exec-change-badge.hidden{ display:none; }
+.exec-change-badge.same{ background: rgba(255,255,255,.04); color: var(--text-dim); border-color: var(--border); }
 .reasons-list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:9px; }
 .reasons-list li{
   font-size:13.5px; line-height:1.6; padding-right:16px; position:relative; color: var(--text);
@@ -859,11 +873,29 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
     </section>
 
     <section class="exec-summary-card">
-      <h2>📋 الخلاصة الشاملة</h2>
+      <div class="exec-summary-header">
+        <h2>📋 الخلاصة الشاملة</h2>
+        <button id="execHistoryBtn" class="ghost-btn" type="button">📜 السجل التاريخي</button>
+      </div>
+      <p id="execPlainSummary" class="exec-plain-summary">جارٍ التحليل…</p>
+      <div id="execChangeBadge" class="exec-change-badge hidden"></div>
       <div id="execSummaryList" class="exec-summary-list">
         <div class="exec-row"><span class="exec-label">جارٍ التحليل…</span></div>
       </div>
     </section>
+
+    <div id="execHistoryModal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>📜 سجل الخلاصات الشاملة</h3>
+          <button id="closeExecHistory" class="icon-btn" type="button">✕</button>
+        </div>
+        <p class="setting-hint">آخر 50 لقطة من الخلاصة الشاملة، للمقارنة اللاحقة بما حصل فعليًا في السوق.</p>
+        <ul id="execHistoryList" class="notif-inbox-list">
+          <li class="news-loading">لا يوجد سجل بعد.</li>
+        </ul>
+      </div>
+    </div>
 
     <section class="reasons-card">
       <div class="reasons-header">
@@ -1114,7 +1146,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-07-11'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-07-12'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -2801,7 +2833,7 @@ function biasToVerdict(bias){
 // strength, each with its own plain verdict (شراء/بيع/حياد) right next to it — then the final
 // overall call at the bottom. This mirrors rec.reasons (which already carries a category +
 // bias per indicator) rather than duplicating the scoring logic.
-function renderExecutiveSummary(rec, { trend5m, trend1h, trend4h, trend1d, sr, structure }){
+function renderExecutiveSummary(rec, { trend5m, trend1h, trend4h, trend1d, sr, structure, price, fullAnalysis }){
   const list = $('execSummaryList');
   const rows = [];
 
@@ -2859,6 +2891,61 @@ function renderExecutiveSummary(rec, { trend5m, trend1h, trend4h, trend1d, sr, s
       <span class="exec-detail">${rec.confidence != null ? `الثقة: ${rec.confidence}%` : ''}</span>
       <span class="exec-verdict ${finalCls}">${finalText}</span>
     </div>`;
+
+  // ---- plain one-sentence summary for beginners ----
+  const trendsAgreeing = [trend5m, trend1h, trend4h, trend1d].filter(t => t && t.trend === (rec.score >= 0 ? 'up' : 'down')).length;
+  const trendPhrase = trendsAgreeing >= 3 ? 'على أغلب الأطر الزمنية' : trendsAgreeing === 2 ? 'على بعض الأطر الزمنية' : 'بشكل غير حاسم عبر الأطر الزمنية';
+  const srPhrase = nearestSup && Math.abs(price - nearestSup.avg) / price < 0.005
+    ? ` مع وجود دعم قريب${nearestSup.strength >= 2 ? ' قوي' : ''}`
+    : (nearestRes && Math.abs(price - nearestRes.avg) / price < 0.005 ? ` مع وجود مقاومة قريبة${nearestRes.strength >= 2 ? ' قوية' : ''}` : '');
+  let plainSummary;
+  if(rec.marketClosed){
+    plainSummary = '🔒 السوق مغلق حاليًا — التحليل المعروض للدراسة فقط، لا توجد توصية دخول فعلية.';
+  } else if(rec.label === 'محايد' || !rec.confidence){
+    plainSummary = `الوضع الحالي محايد وغير حاسم${trendPhrase ? ' ' + trendPhrase : ''} — الأفضل الانتظار لإشارة أوضح.`;
+  } else {
+    const dirWord = rec.score > 0 ? 'صاعد' : 'هابط';
+    const strengthWord = Math.abs(rec.score) >= 4 ? 'قوي' : '';
+    plainSummary = `الذهب في اتجاه ${dirWord} ${strengthWord} ${trendPhrase}${srPhrase} — بثقة ${rec.confidence}%، ${rec.score > 0 ? 'فرصة شراء محتملة' : 'فرصة بيع محتملة'}.`;
+  }
+  $('execPlainSummary').textContent = plainSummary;
+
+  // ---- comparison vs the previous snapshot ----
+  const prev = state.lastExecSnapshot;
+  const badge = $('execChangeBadge');
+  if(prev){
+    if(prev.finalText !== finalText){
+      badge.className = 'exec-change-badge';
+      badge.textContent = `🔄 تغيّرت الخلاصة عن آخر تحديث: كانت "${prev.finalText}" وبقت "${finalText}"`;
+    } else {
+      badge.className = 'exec-change-badge same';
+      badge.textContent = `➡️ نفس الخلاصة مستمرة من آخر تحديث ("${finalText}")`;
+    }
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+
+  // ---- strong 3-timeframe alignment alert (5m + 1h + 4h all agreeing, newly) ----
+  const dirs = [trend5m, trend1h, trend4h].map(t => t && t.trend);
+  const aligned = dirs[0] && dirs[0] !== 'neutral' && dirs[0] !== 'unavailable' && dirs.every(d => d === dirs[0]);
+  if(aligned && !state.lastAlignmentDir){
+    notify('🎯 تقاطع قوي على 3 أطر زمنية', `الـ5 دقائق والساعة و4 الساعات كلهم متفقين الآن على اتجاه ${dirs[0] === 'up' ? 'صاعد 📈' : 'هابط 📉'} — إشارة أقوى من المعتاد.`, 'nabd-align-' + Date.now());
+  }
+  state.lastAlignmentDir = aligned ? dirs[0] : null;
+
+  // ---- persist this snapshot to the historical log (full analysis only, to keep it meaningful) ----
+  if(fullAnalysis){
+    const snapshot = {
+      id: 'exec_' + Date.now(), timestamp: Date.now(), finalText, finalCls,
+      confidence: rec.confidence, price, plainSummary,
+      trend5m: trend5m && trend5m.trend, trend1h: trend1h && trend1h.trend,
+      trend4h: trend4h && trend4h.trend, trend1d: trend1d && trend1d.trend,
+    };
+    saveExecSnapshot(snapshot).catch(() => {});
+  }
+
+  state.lastExecSnapshot = { finalText, finalCls, confidence: rec.confidence };
 }
 
 const CATEGORY_LABELS_AR = {
@@ -3505,19 +3592,79 @@ async function fetchEconomicCalendar(){
 // OS notification away without tapping it. Records auto-expire after 48h.
 const NOTIF_DB_NAME = 'nabd-db';
 const NOTIF_STORE = 'notifications';
+const EXEC_HISTORY_STORE = 'execSummaries';
 const NOTIF_RETENTION_MS = 48 * 3600 * 1000;
+const EXEC_HISTORY_MAX = 50;
 
 function openNotifDB(){
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(NOTIF_DB_NAME, 1);
+    const req = indexedDB.open(NOTIF_DB_NAME, 2);
     req.onupgradeneeded = () => {
       const db = req.result;
       if(!db.objectStoreNames.contains(NOTIF_STORE)) db.createObjectStore(NOTIF_STORE, { keyPath: 'id' });
+      if(!db.objectStoreNames.contains(EXEC_HISTORY_STORE)) db.createObjectStore(EXEC_HISTORY_STORE, { keyPath: 'id' });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
+
+async function saveExecSnapshot(snapshot){
+  const db = await openNotifDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(EXEC_HISTORY_STORE, 'readwrite');
+    tx.objectStore(EXEC_HISTORY_STORE).put(snapshot);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  // keep only the most recent EXEC_HISTORY_MAX snapshots
+  const all = await new Promise((resolve, reject) => {
+    const tx = db.transaction(EXEC_HISTORY_STORE, 'readonly');
+    const req = tx.objectStore(EXEC_HISTORY_STORE).getAll();
+    req.onsuccess = () => resolve(req.result.sort((a, b) => b.timestamp - a.timestamp));
+    req.onerror = () => reject(req.error);
+  });
+  const excess = all.slice(EXEC_HISTORY_MAX);
+  if(excess.length){
+    const tx = db.transaction(EXEC_HISTORY_STORE, 'readwrite');
+    excess.forEach(r => tx.objectStore(EXEC_HISTORY_STORE).delete(r.id));
+  }
+}
+
+async function getExecHistory(){
+  const db = await openNotifDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(EXEC_HISTORY_STORE, 'readonly');
+    const req = tx.objectStore(EXEC_HISTORY_STORE).getAll();
+    req.onsuccess = () => resolve(req.result.sort((a, b) => b.timestamp - a.timestamp));
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function renderExecHistory(){
+  const records = await getExecHistory();
+  const list = $('execHistoryList');
+  if(!records.length){
+    list.innerHTML = '<li class="news-loading">لا يوجد سجل بعد.</li>';
+    return;
+  }
+  list.innerHTML = records.map(r => `
+    <li class="notif-inbox-item">
+      <div class="notif-inbox-row">
+        <span class="notif-inbox-title">${r.finalCls === 'v-bull' ? '🟢' : r.finalCls === 'v-bear' ? '🔴' : '⚪'} ${escapeHtml(r.finalText)}${r.confidence != null ? ` (${r.confidence}%)` : ''}</span>
+        <span class="notif-inbox-time">${formatTimeAgo(r.timestamp)}</span>
+      </div>
+      <div class="notif-inbox-body">${escapeHtml(r.plainSummary || '')}
+السعر وقتها: ${formatPrice(r.price)}</div>
+    </li>
+  `).join('');
+  list.querySelectorAll('.notif-inbox-item').forEach(item => {
+    item.addEventListener('click', () => item.classList.toggle('expanded'));
+  });
+}
+
+function openExecHistory(){ $('execHistoryModal').classList.remove('hidden'); renderExecHistory(); }
+function closeExecHistory(){ $('execHistoryModal').classList.add('hidden'); }
 
 async function saveNotifRecord(record){
   const db = await openNotifDB();
@@ -4181,7 +4328,7 @@ async function loadAsset(asset, fullAnalysis = true){
 
     const categoryWeights = getCategoryWeightMap();
     const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, price: livePrice, upcomingEvent, categoryWeights });
-    renderExecutiveSummary(rec, { trend5m, trend1h, trend4h: htfTrend, trend1d, sr, structure });
+    renderExecutiveSummary(rec, { trend5m, trend1h, trend4h: htfTrend, trend1d, sr, structure, price: livePrice, fullAnalysis });
 
     // Hard safety gate: never present an actionable trade recommendation while the
     // market is closed — the underlying data isn't live and no order could be placed anyway.
@@ -4691,6 +4838,9 @@ function init(){
 
   $('notifInboxBtn').addEventListener('click', openNotifInbox);
   $('closeNotifInbox').addEventListener('click', closeNotifInbox);
+  $('execHistoryBtn').addEventListener('click', openExecHistory);
+  $('closeExecHistory').addEventListener('click', closeExecHistory);
+  $('execHistoryModal').addEventListener('click', e => { if(e.target.id === 'execHistoryModal') closeExecHistory(); });
   $('notifInboxModal').addEventListener('click', e => { if(e.target.id === 'notifInboxModal') closeNotifInbox(); });
   updateNotifBadge();
   setInterval(() => { purgeOldNotifRecords().then(() => updateNotifBadge()); }, 5 * 60000);
