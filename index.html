@@ -876,7 +876,10 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
     <section class="exec-summary-card">
       <div class="exec-summary-header">
         <h2>📋 الخلاصة الشاملة</h2>
-        <button id="execHistoryBtn" class="ghost-btn" type="button">📜 السجل التاريخي</button>
+        <div style="display:flex; gap:6px;">
+          <button id="speakSummaryBtn" class="ghost-btn" type="button">🔊 اسمع الخلاصة</button>
+          <button id="execHistoryBtn" class="ghost-btn" type="button">📜 السجل التاريخي</button>
+        </div>
       </div>
       <p id="execPlainSummary" class="exec-plain-summary">جارٍ التحليل…</p>
       <div id="execChangeBadge" class="exec-change-badge hidden"></div>
@@ -1109,6 +1112,14 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
     </div>
 
     <div class="setting-group">
+      <label class="setting-label">🔊 القراءة الصوتية</label>
+      <label class="radio-row" style="cursor:pointer;">
+        <input type="checkbox" id="autoSpeakToggle">
+        <span><strong>قراءة تلقائية عند تغيّر الخلاصة</strong><small>هيقرأ الخلاصة بصوت عالٍ لما التوصية تتغيّر فعليًا (مش كل تحديث)</small></span>
+      </label>
+    </div>
+
+    <div class="setting-group">
       <label class="setting-label">🎯 الحد الأدنى لنسبة الثقة</label>
       <p class="setting-hint">أي توصية بثقة أقل من الرقم ده هتفضل معروضة للدراسة بس، ومش هتتحول لصفقة متابَعة ولا هتوصلك إشعار دخول بيها. حطّه 0 لإلغاء الفلتر تمامًا.</p>
       <div style="display:flex; align-items:center; gap:10px;">
@@ -1156,13 +1167,14 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-18-01'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-18-02'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
   goldSource: localStorage.getItem('nabd_goldSource') || 'paxg',
   backendUrl: localStorage.getItem('nabd_backendUrl') || '',
   minConfidence: parseInt(localStorage.getItem('nabd_minConfidence') || '0', 10),
+  autoSpeak: localStorage.getItem('nabd_autoSpeak') === 'true',
   apiKey: localStorage.getItem('nabd_twelveDataKey') || '',
   aiKey: localStorage.getItem('nabd_aiKey') || '',
   candles: { gold: [] },
@@ -2364,9 +2376,9 @@ function chartPatternIcon(name, bias){
 
 /* ===================== Recommendation engine ===================== */
 
-const TOTAL_POSSIBLE_SIGNALS = 15; // rsi, macd, fib, sr-support, sr-resistance, candle, chartPattern, ema, vwap, structure(BOS/CHOCH), OB/FVG, divergence, regime-bonus, dxy, volume(OBV)
+const TOTAL_POSSIBLE_SIGNALS = 16; // rsi, macd, fib, sr-support, sr-resistance, candle, chartPattern, ema, vwap, structure(BOS/CHOCH), OB/FVG, divergence, regime-bonus, dxy, volume(OBV), sentiment(AI)
 
-function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, price, upcomingEvent, categoryWeights = {}, atTime = Date.now() }){
+function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, sentiment, price, upcomingEvent, categoryWeights = {}, atTime = Date.now() }){
   let score = 0;
   const votes = [];
   const reasons = [];
@@ -2497,6 +2509,17 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
     else if(priceDown && obvDown) vote(-1, 'volume', 'bear', 'الحجم (OBV): تدفق حجم بيعي يؤكد الحركة الهابطة الأخيرة في السعر.');
     else if((priceUp && obvDown) || (priceDown && obvUp)) reasons.push({ bias: 'neutral', text: '⚠️ الحجم (OBV): لا يؤكد حركة السعر الأخيرة — احتمال ضعف داخلي في الحركة.', category: 'volume' });
     else reasons.push({ bias: 'neutral', text: 'الحجم (OBV): متوازن دون إشارة واضحة.', category: 'volume' });
+  }
+
+  // AI news sentiment (optional — only present if the user configured their own Anthropic
+  // key). Treated as a real vote so it benefits from the same self-learning weight system as
+  // every other category, not just a decorative badge.
+  if(sentiment && sentiment.sentiment !== 'neutral'){
+    const conf = sentiment.confidence != null ? ` (ثقة ${sentiment.confidence}%)` : '';
+    if(sentiment.sentiment === 'bullish') vote(1, 'sentiment', 'bull', `تحليل الأخبار بالذكاء الاصطناعي${conf}: ${sentiment.reasoning}`);
+    else vote(-1, 'sentiment', 'bear', `تحليل الأخبار بالذكاء الاصطناعي${conf}: ${sentiment.reasoning}`);
+  } else if(sentiment){
+    reasons.push({ bias: 'neutral', text: `تحليل الأخبار بالذكاء الاصطناعي: انطباع محايد — ${sentiment.reasoning}`, category: 'sentiment' });
   }
 
   const pct = Math.max(-100, Math.min(100, Math.round((score / TOTAL_POSSIBLE_SIGNALS) * 100)));
@@ -2877,7 +2900,7 @@ function renderExecutiveSummary(rec, { trend5m, trend1h, trend4h, trend1d, sr, s
 
   // One row per indicator category, in a fixed, readable order — reusing the exact bias
   // already computed for that category in rec.reasons (single source of truth, no re-deriving).
-  const order = ['rsi','macd','fib','sr','candle','chartPattern','ema','vwap','structure','smc_zone','divergence','regime','dxy','volume'];
+  const order = ['rsi','macd','fib','sr','candle','chartPattern','ema','vwap','structure','smc_zone','divergence','regime','dxy','volume','sentiment'];
   order.forEach(cat => {
     const reason = rec.reasons.find(r => r.category === cat);
     if(!reason) return;
@@ -2944,6 +2967,7 @@ function renderExecutiveSummary(rec, { trend5m, trend1h, trend4h, trend1d, sr, s
     if(prev.finalText !== finalText){
       badge.className = 'exec-change-badge';
       badge.textContent = `🔄 تغيّرت الخلاصة عن آخر تحديث: كانت "${prev.finalText}" وبقت "${finalText}"`;
+      if(state.autoSpeak) speakText(`تغيّرت التوصية. ${plainSummary}`);
     } else {
       badge.className = 'exec-change-badge same';
       badge.textContent = `➡️ نفس الخلاصة مستمرة من آخر تحديث ("${finalText}")`;
@@ -2979,7 +3003,7 @@ const CATEGORY_LABELS_AR = {
   rsi: 'RSI', macd: 'MACD', fib: 'فيبوناتشي', sr: 'دعم/مقاومة', candle: 'نمط شمعة',
   chartPattern: 'نمط فني', ema: 'متوسطات متحركة', vwap: 'VWAP', structure: 'هيكل السوق (SMC)',
   smc_zone: 'Order Block/FVG', divergence: 'انحراف', regime: 'نظام السوق', dxy: 'مؤشر الدولار',
-  volume: 'الحجم (OBV)',
+  volume: 'الحجم (OBV)', sentiment: 'تحليل الأخبار (AI)',
 };
 
 // Renders the "why this confidence %?" transparency panel: one bar per indicator category
@@ -3691,6 +3715,45 @@ async function renderExecHistory(){
 }
 
 function openExecHistory(){ $('execHistoryModal').classList.remove('hidden'); renderExecHistory(); }
+
+/* ===================== Text-to-speech (reads the plain-language summary aloud) ===================== */
+// Uses the browser's built-in SpeechSynthesis API — free, no server, no API key. The one
+// honest limitation: many Android devices/browsers don't ship a good (or any) Arabic voice
+// pack out of the box, so this tries to find one, and clearly tells the user if it can't
+// rather than silently reading nothing or reading Arabic text in a mismatched voice.
+function pickArabicVoice(){
+  const voices = speechSynthesis.getVoices();
+  return voices.find(v => v.lang && v.lang.toLowerCase().startsWith('ar')) || null;
+}
+
+function speakText(text){
+  if(!('speechSynthesis' in window)){
+    showToast('المتصفح ده مش بيدعم القراءة الصوتية.');
+    return;
+  }
+  speechSynthesis.cancel(); // stop anything already being read
+  const utter = new SpeechSynthesisUtterance(text);
+  const arVoice = pickArabicVoice();
+  if(arVoice){
+    utter.voice = arVoice;
+    utter.lang = arVoice.lang;
+  } else {
+    utter.lang = 'ar-SA';
+    showToast('⚠️ مفيش صوت عربي مثبّت على الجهاز — هيقرأ بالنطق الافتراضي (قد يكون غير دقيق). تقدر تنزّل حزمة صوت عربي من إعدادات النطق في الأندرويد.');
+  }
+  utter.rate = 0.98;
+  speechSynthesis.speak(utter);
+}
+
+function speakCurrentSummary(){
+  const text = $('execPlainSummary').textContent;
+  if(!text || text === 'جارٍ التحليل…'){
+    showToast('لسه مفيش خلاصة جاهزة للقراءة.');
+    return;
+  }
+  speakText(text);
+}
+
 function closeExecHistory(){ $('execHistoryModal').classList.add('hidden'); }
 
 async function saveNotifRecord(record){
@@ -4167,6 +4230,77 @@ async function requestNotifPermission(){
 
 /* ===================== AI deep analysis (optional, uses user's own Anthropic key) ===================== */
 
+/* ===================== AI news sentiment (uses the user's own Anthropic key) ===================== */
+// Unlike the free-text "deep analysis" box below, this asks for a STRUCTURED verdict
+// (bullish/bearish/neutral for gold specifically) so it can become a real voting category in
+// buildRecommendation — exactly like DXY or volume — including being subject to the same
+// self-learning weight system. Only runs if the user has entered their own Anthropic key, and
+// is cached for 30 minutes (an AI call costs the user real money, and news sentiment doesn't
+// meaningfully change minute-to-minute anyway).
+function buildSentimentPrompt(events){
+  const upcoming = events.filter(e => e.dateObj.getTime() > Date.now()).slice(0, 6);
+  const recent = events.filter(e => e.dateObj.getTime() <= Date.now() && e.actual).slice(-6);
+  const fmt = e => `${translateEventName(e.title)} (${e.impact === 'High' ? 'عالي' : 'متوسط'} التأثير) — التقدير: ${e.forecast || '—'}، السابق: ${e.previous || '—'}${e.actual ? '، الفعلي: ' + e.actual : ''}`;
+  const upcomingText = upcoming.length ? upcoming.map(fmt).join('\n') : 'لا توجد أحداث وشيكة مهمة.';
+  const recentText = recent.length ? recent.map(fmt).join('\n') : 'لا توجد نتائج فعلية حديثة.';
+
+  return `أنت محلل اقتصادي كلي متخصص في سوق الذهب (XAU/USD). لديك تقويم الأحداث الاقتصادية الأمريكية التالي:
+
+أحداث فعلية صدرت مؤخرًا (قارن الفعلي بالتقدير):
+${recentText}
+
+أحداث قادمة وشيكة:
+${upcomingText}
+
+بناءً على هذه البيانات فقط، قيّم الانطباع العام المتوقع لحركة الذهب في الساعات القليلة القادمة (تذكّر: الذهب يتأثر عكسيًا بقوة الدولار وأسعار الفائدة المتوقعة، وطرديًا بأجواء عدم اليقين/الملاذ الآمن).
+
+أجب بصيغة JSON فقط، بدون أي نص أو markdown قبله أو بعده، بالضبط بهذا الشكل:
+{"sentiment": "bullish" أو "bearish" أو "neutral", "confidence": رقم من 0 إلى 100, "reasoning": "جملتان بالعربية توضحان السبب"}`;
+}
+
+async function fetchNewsSentiment(events){
+  if(!state.aiKey) return null;
+  const prompt = buildSentimentPrompt(events);
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': state.aiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 300,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+  if(!res.ok) throw new Error('AI sentiment request failed: ' + res.status);
+  const data = await res.json();
+  const block = (data.content || []).find(b => b.type === 'text');
+  if(!block) return null;
+  try{
+    const cleaned = block.text.trim().replace(/^```json\s*|\s*```$/g, '');
+    const parsed = JSON.parse(cleaned);
+    if(!['bullish', 'bearish', 'neutral'].includes(parsed.sentiment)) return null;
+    return parsed;
+  }catch(e){ return null; } // if the model didn't return clean JSON, just skip this cycle silently
+}
+
+const SENTIMENT_CACHE_MS = 30 * 60000;
+async function getNewsSentimentCached(){
+  if(!state.aiKey || !state.calendarEvents || !state.calendarEvents.length) return null;
+  const cache = JSON.parse(localStorage.getItem('nabd_sentimentCache') || 'null');
+  if(cache && (Date.now() - cache.fetchedAt) < SENTIMENT_CACHE_MS) return cache;
+  try{
+    const result = await fetchNewsSentiment(state.calendarEvents);
+    if(!result) return cache || null;
+    const withMeta = { ...result, fetchedAt: Date.now() };
+    localStorage.setItem('nabd_sentimentCache', JSON.stringify(withMeta));
+    return withMeta;
+  }catch(e){ return cache || null; } // stay on the last good reading rather than breaking analysis
+}
+
 function buildAIPrompt({ rsi, macd, fib, sr, candlePattern, chartPattern, structure, price, rec, upcomingEvent }){
   const macdLast = macd ? macd.histogram[macd.histogram.length - 1].toFixed(3) : 'غير متاح';
   const fibNear = fib ? fib.levels.filter(l => STRONG_FIB_PCTS.includes(l.pct))
@@ -4353,8 +4487,19 @@ async function loadAsset(asset, fullAnalysis = true){
       ? { trend: (livePrice > ema.ema20 && ema.ema20 > ema.ema50) ? 'up' : (livePrice < ema.ema20 && ema.ema20 < ema.ema50) ? 'down' : 'neutral' }
       : null;
 
+    // AI news sentiment — only if the user set an Anthropic key, cached 30 min (see
+    // getNewsSentimentCached), and only re-checked on a full analysis to avoid firing an AI
+    // call on every quiet price-only poll.
+    let sentiment = null;
+    if(fullAnalysis){
+      try{ sentiment = await getNewsSentimentCached(); }catch(e){ sentiment = null; }
+      state.frozenSentiment = sentiment;
+    } else {
+      sentiment = state.frozenSentiment || null;
+    }
+
     const categoryWeights = getCategoryWeightMap();
-    const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, price: livePrice, upcomingEvent, categoryWeights });
+    const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, sentiment, price: livePrice, upcomingEvent, categoryWeights });
     renderExecutiveSummary(rec, { trend5m, trend1h, trend4h: htfTrend, trend1d, sr, structure, price: livePrice, fullAnalysis });
 
     // Hard safety gate: never present an actionable trade recommendation while the
@@ -4449,6 +4594,7 @@ function openSettings(){
   $('aiKeyInput').value = state.aiKey;
   $('backendUrlInput').value = state.backendUrl;
   $('minConfidenceSlider').value = state.minConfidence;
+  $('autoSpeakToggle').checked = state.autoSpeak;
   $('minConfidenceValue').textContent = state.minConfidence + '%';
   const iset = state.indicatorSettings;
   $('setRsiPeriod').value = iset.rsiPeriod;
@@ -4479,6 +4625,8 @@ function saveSettings(){
   localStorage.setItem('nabd_backendUrl', state.backendUrl);
   state.minConfidence = parseInt($('minConfidenceSlider').value, 10) || 0;
   localStorage.setItem('nabd_minConfidence', String(state.minConfidence));
+  state.autoSpeak = $('autoSpeakToggle').checked;
+  localStorage.setItem('nabd_autoSpeak', String(state.autoSpeak));
   localStorage.setItem('nabd_goldSource', selected);
   localStorage.setItem('nabd_twelveDataKey', key);
   localStorage.setItem('nabd_aiKey', aiKey);
@@ -4870,6 +5018,7 @@ function init(){
   $('notifInboxBtn').addEventListener('click', openNotifInbox);
   $('closeNotifInbox').addEventListener('click', closeNotifInbox);
   $('execHistoryBtn').addEventListener('click', openExecHistory);
+  $('speakSummaryBtn').addEventListener('click', speakCurrentSummary);
   $('closeExecHistory').addEventListener('click', closeExecHistory);
   $('execHistoryModal').addEventListener('click', e => { if(e.target.id === 'execHistoryModal') closeExecHistory(); });
   $('notifInboxModal').addEventListener('click', e => { if(e.target.id === 'notifInboxModal') closeNotifInbox(); });
