@@ -1089,7 +1089,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
         <input type="radio" name="goldSource" value="twelvedata">
         <span>
           <strong>TwelveData</strong>
-          <small>سعر السوق الفعلي XAU/USD — يتطلب مفتاح API مجاني</small>
+          <small>سعر السوق الفعلي XAU/USD — يتطلب مفتاح API مجاني. كمان بيفعّل لوحة ارتباط الفضة والنفط تلقائيًا.</small>
         </span>
       </label>
 
@@ -1167,7 +1167,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-18-02'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-18-03'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1584,6 +1584,44 @@ async function getDXYWithTrend(){
   const next = { previous: cache ? cache.current : null, current: fresh };
   localStorage.setItem('nabd_dxyCache', JSON.stringify(next));
   return { value: fresh.value, trend: getDXYTrend(fresh, next.previous) };
+}
+
+/* ===================== Correlated-asset dashboard: Silver & Oil ===================== */
+// HONEST LIMITATION: there is no free, key-less, CORS-friendly live feed for silver or oil
+// (unlike DXY, which we could compute ourselves from open forex rates). Every commodity API
+// that exists requires signing up for a key. So this only activates when the user already has
+// a TwelveData key configured (the same one used for real XAU/USD) — Binance/PAXG-only users
+// simply won't see this panel, which is stated plainly in the UI rather than silently doing
+// nothing. Cached hourly per symbol, same reasoning as DXY: these are macro/correlation
+// context, not something that needs tick-by-tick freshness, and it keeps TwelveData credit
+// usage low (see the credit-budget notes elsewhere in this file).
+async function fetchTwelveDataSimplePrice(symbol, apikey){
+  const url = `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbol)}&apikey=${apikey}`;
+  const res = await fetch(url);
+  const d = await res.json();
+  if(d.status === 'error') throw new Error(d.message || `تعذر جلب سعر ${symbol}`);
+  return { value: parseFloat(d.close), fetchedAt: Date.now() };
+}
+
+function getSimpleTrend(current, previous, thresholdPct = 0.15){
+  if(!previous) return 'flat';
+  const changePct = (current.value - previous.value) / previous.value * 100;
+  if(changePct > thresholdPct) return 'up';
+  if(changePct < -thresholdPct) return 'down';
+  return 'flat';
+}
+
+async function getCorrelatedAssetTrend(symbol, cacheKey){
+  if(state.goldSource !== 'twelvedata' || !state.apiKey) return null;
+  const cache = JSON.parse(localStorage.getItem(cacheKey) || 'null');
+  const now = Date.now();
+  if(cache && cache.current && (now - cache.current.fetchedAt) < 3600000){
+    return { value: cache.current.value, trend: getSimpleTrend(cache.current, cache.previous) };
+  }
+  const fresh = await fetchTwelveDataSimplePrice(symbol, state.apiKey);
+  const next = { previous: cache ? cache.current : null, current: fresh };
+  localStorage.setItem(cacheKey, JSON.stringify(next));
+  return { value: fresh.value, trend: getSimpleTrend(fresh, next.previous) };
 }
 
 async function fetchTwelveDataPrice(apikey){
@@ -2376,9 +2414,9 @@ function chartPatternIcon(name, bias){
 
 /* ===================== Recommendation engine ===================== */
 
-const TOTAL_POSSIBLE_SIGNALS = 16; // rsi, macd, fib, sr-support, sr-resistance, candle, chartPattern, ema, vwap, structure(BOS/CHOCH), OB/FVG, divergence, regime-bonus, dxy, volume(OBV), sentiment(AI)
+const TOTAL_POSSIBLE_SIGNALS = 17; // rsi, macd, fib, sr-support, sr-resistance, candle, chartPattern, ema, vwap, structure(BOS/CHOCH), OB/FVG, divergence, regime-bonus, dxy, volume(OBV), sentiment(AI), silver (oil is informational-only, not a vote)
 
-function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, sentiment, price, upcomingEvent, categoryWeights = {}, atTime = Date.now() }){
+function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, price, upcomingEvent, categoryWeights = {}, atTime = Date.now() }){
   let score = 0;
   const votes = [];
   const reasons = [];
@@ -2520,6 +2558,24 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
     else vote(-1, 'sentiment', 'bear', `تحليل الأخبار بالذكاء الاصطناعي${conf}: ${sentiment.reasoning}`);
   } else if(sentiment){
     reasons.push({ bias: 'neutral', text: `تحليل الأخبار بالذكاء الاصطناعي: انطباع محايد — ${sentiment.reasoning}`, category: 'sentiment' });
+  }
+
+  // Silver (XAG) — moves WITH gold most of the time (both precious metals react to the same
+  // safe-haven/inflation/rate drivers), so this is a CONFIRMING correlate, not a counter-filter
+  // like DXY. Only available with a TwelveData key (see getCorrelatedAssetTrend).
+  if(silver && silver.trend !== 'flat'){
+    if(silver.trend === 'up') vote(1, 'silver', 'bull', `الفضة (XAG) في اتجاه صاعد أيضًا (${silver.value.toFixed(2)}$) — ارتباط طردي تقليدي مع الذهب يدعم نفس الاتجاه.`);
+    else vote(-1, 'silver', 'bear', `الفضة (XAG) في اتجاه هابط أيضًا (${silver.value.toFixed(2)}$) — ارتباط طردي تقليدي مع الذهب يدعم نفس الاتجاه.`);
+  } else if(silver){
+    reasons.push({ bias: 'neutral', text: `الفضة (XAG) شبه مستقرة عند ${silver.value.toFixed(2)}$ — لا تعطي إشارة ارتباط واضحة حاليًا.`, category: 'silver' });
+  }
+
+  // Oil (WTI) — informational only, NOT a vote: its relationship with gold is much less
+  // consistent (sometimes tracks inflation expectations with gold, sometimes moves opposite
+  // via dollar strength), so treating it as a directional signal would just add noise.
+  if(oil){
+    const oilTrendAr = oil.trend === 'up' ? 'صاعد 📈' : oil.trend === 'down' ? 'هابط 📉' : 'مستقر';
+    reasons.push({ bias: 'neutral', text: `النفط (WTI) عند ${oil.value.toFixed(2)}$ — اتجاه ${oilTrendAr} (معلومة سياقية، لا يُحتسب كصوت لضعف الارتباط المباشر بالذهب).`, category: 'oil' });
   }
 
   const pct = Math.max(-100, Math.min(100, Math.round((score / TOTAL_POSSIBLE_SIGNALS) * 100)));
@@ -2900,7 +2956,7 @@ function renderExecutiveSummary(rec, { trend5m, trend1h, trend4h, trend1d, sr, s
 
   // One row per indicator category, in a fixed, readable order — reusing the exact bias
   // already computed for that category in rec.reasons (single source of truth, no re-deriving).
-  const order = ['rsi','macd','fib','sr','candle','chartPattern','ema','vwap','structure','smc_zone','divergence','regime','dxy','volume','sentiment'];
+  const order = ['rsi','macd','fib','sr','candle','chartPattern','ema','vwap','structure','smc_zone','divergence','regime','dxy','volume','sentiment','silver','oil'];
   order.forEach(cat => {
     const reason = rec.reasons.find(r => r.category === cat);
     if(!reason) return;
@@ -3003,7 +3059,7 @@ const CATEGORY_LABELS_AR = {
   rsi: 'RSI', macd: 'MACD', fib: 'فيبوناتشي', sr: 'دعم/مقاومة', candle: 'نمط شمعة',
   chartPattern: 'نمط فني', ema: 'متوسطات متحركة', vwap: 'VWAP', structure: 'هيكل السوق (SMC)',
   smc_zone: 'Order Block/FVG', divergence: 'انحراف', regime: 'نظام السوق', dxy: 'مؤشر الدولار',
-  volume: 'الحجم (OBV)', sentiment: 'تحليل الأخبار (AI)',
+  volume: 'الحجم (OBV)', sentiment: 'تحليل الأخبار (AI)', silver: 'الفضة (XAG)', oil: 'النفط (WTI)',
 };
 
 // Renders the "why this confidence %?" transparency panel: one bar per indicator category
@@ -4498,8 +4554,19 @@ async function loadAsset(asset, fullAnalysis = true){
       sentiment = state.frozenSentiment || null;
     }
 
+    // Correlated-asset dashboard (silver + oil) — only available with a TwelveData key (see
+    // getCorrelatedAssetTrend's own honesty check), cached hourly, only refreshed on full analysis.
+    let silver = null, oil = null;
+    if(fullAnalysis){
+      try{ silver = await getCorrelatedAssetTrend('XAG/USD', 'nabd_silverCache'); }catch(e){ silver = null; }
+      try{ oil = await getCorrelatedAssetTrend('WTI/USD', 'nabd_oilCache'); }catch(e){ oil = null; }
+      state.frozenSilver = silver; state.frozenOil = oil;
+    } else {
+      silver = state.frozenSilver || null; oil = state.frozenOil || null;
+    }
+
     const categoryWeights = getCategoryWeightMap();
-    const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, sentiment, price: livePrice, upcomingEvent, categoryWeights });
+    const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, price: livePrice, upcomingEvent, categoryWeights });
     renderExecutiveSummary(rec, { trend5m, trend1h, trend4h: htfTrend, trend1d, sr, structure, price: livePrice, fullAnalysis });
 
     // Hard safety gate: never present an actionable trade recommendation while the
