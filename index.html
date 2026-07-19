@@ -1167,7 +1167,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-18-03'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-18-04'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1506,6 +1506,58 @@ async function fetchBinanceTicker(symbol){
   return { price: parseFloat(d.lastPrice), changePercent: parseFloat(d.priceChangePercent) };
 }
 
+/* ===================== Seasonal analysis ===================== */
+// Historical "does this month/weekday tend to be good or bad for gold" stats. There's no
+// free multi-year XAU/USD history without a paid plan, so this reuses the free PAXG/USDT daily
+// history from Binance (available since PAXG launched, ~2020) as a reasonable multi-year proxy
+// for gold's own seasonal tendencies — it's the same underlying asset, just tokenized.
+// Cached for a week: this is backward-looking statistics that doesn't change intra-day.
+const MONTH_NAMES_AR = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'];
+const WEEKDAY_NAMES_AR = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+
+function computeSeasonalStats(dailyCandles){
+  const now = new Date();
+  const curMonth = now.getUTCMonth();
+  const curWeekday = now.getUTCDay();
+  const monthChanges = [], weekdayChanges = [];
+
+  for(let i = 1; i < dailyCandles.length; i++){
+    const c = dailyCandles[i], prev = dailyCandles[i - 1];
+    const pct = (c.close - prev.close) / prev.close * 100;
+    const d = new Date(c.time);
+    if(d.getUTCMonth() === curMonth) monthChanges.push(pct);
+    if(d.getUTCDay() === curWeekday) weekdayChanges.push(pct);
+  }
+
+  const summarize = (arr) => {
+    if(arr.length < 5) return null; // not enough history to say anything meaningful
+    const avgPct = arr.reduce((a, b) => a + b, 0) / arr.length;
+    const winRate = Math.round((arr.filter(v => v > 0).length / arr.length) * 100);
+    return { avgPct, winRate, sampleSize: arr.length };
+  };
+
+  return {
+    thisMonth: { ...summarize(monthChanges), name: MONTH_NAMES_AR[curMonth] },
+    thisWeekday: { ...summarize(weekdayChanges), name: WEEKDAY_NAMES_AR[curWeekday] },
+  };
+}
+
+const SEASONAL_CACHE_MS = 7 * 24 * 3600000; // one week
+async function getSeasonalStatsCached(){
+  const cache = JSON.parse(localStorage.getItem('nabd_seasonalCache') || 'null');
+  if(cache && (Date.now() - cache.computedAt) < SEASONAL_CACHE_MS) return cache.stats;
+  try{
+    // Binance caps a single request at 1000 candles (~2.7 years of daily bars) — plenty for
+    // a "typical month/weekday behavior" read without needing multiple paginated requests.
+    const daily = await fetchBinanceKlines(SYMBOLS.goldPaxg, '1d', 1000);
+    const stats = computeSeasonalStats(daily);
+    localStorage.setItem('nabd_seasonalCache', JSON.stringify({ computedAt: Date.now(), stats }));
+    return stats;
+  }catch(e){
+    return cache ? cache.stats : null; // stay on the last good read rather than breaking analysis
+  }
+}
+
 async function fetchTwelveDataSeries(apikey, interval = '1h', outputsize = 200){
   const url = `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=${interval}&outputsize=${outputsize}&apikey=${apikey}`;
   const res = await fetch(url);
@@ -1756,6 +1808,39 @@ function computeATR(candles, period = 14){
   let atr = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
   for(let i = period; i < trs.length; i++) atr = (atr * (period - 1) + trs[i]) / period;
   return atr;
+}
+
+// Same Wilder's-ATR math as computeATR, but returns the full smoothed series instead of just
+// the final value — needed to establish a "what's normal lately" baseline for spike detection.
+function computeATRSeries(candles, period = 14){
+  if(candles.length < period + 1) return [];
+  const trs = [];
+  for(let i = 1; i < candles.length; i++){
+    const c = candles[i], p = candles[i - 1];
+    trs.push(Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close)));
+  }
+  const series = [];
+  let atr = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  series.push(atr);
+  for(let i = period; i < trs.length; i++){
+    atr = (atr * (period - 1) + trs[i]) / period;
+    series.push(atr);
+  }
+  return series;
+}
+
+// Detects a genuine, sudden volatility EXPANSION: current ATR well above its own recent
+// baseline (the 20 readings before it, excluding the current spike itself) — this is what a
+// real news-driven or surprise move looks like, as opposed to normal day-to-day ATR drift.
+const ATR_SPIKE_MULTIPLIER = 1.5; // current ATR must be 50%+ above its own recent baseline
+function detectATRSpike(candles){
+  const series = computeATRSeries(candles);
+  if(series.length < 22) return null;
+  const current = series[series.length - 1];
+  const baselineWindow = series.slice(-21, -1); // the 20 before the current one
+  const baseline = baselineWindow.reduce((a, b) => a + b, 0) / baselineWindow.length;
+  const ratio = baseline ? current / baseline : 1;
+  return { current, baseline, ratio, isSpike: ratio >= ATR_SPIKE_MULTIPLIER };
 }
 
 function computeBollinger(closes, period = 20, mult = 2){
@@ -2416,7 +2501,7 @@ function chartPatternIcon(name, bias){
 
 const TOTAL_POSSIBLE_SIGNALS = 17; // rsi, macd, fib, sr-support, sr-resistance, candle, chartPattern, ema, vwap, structure(BOS/CHOCH), OB/FVG, divergence, regime-bonus, dxy, volume(OBV), sentiment(AI), silver (oil is informational-only, not a vote)
 
-function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, price, upcomingEvent, categoryWeights = {}, atTime = Date.now() }){
+function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, atrSpike, seasonal, price, upcomingEvent, categoryWeights = {}, atTime = Date.now() }){
   let score = 0;
   const votes = [];
   const reasons = [];
@@ -2576,6 +2661,30 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
   if(oil){
     const oilTrendAr = oil.trend === 'up' ? 'صاعد 📈' : oil.trend === 'down' ? 'هابط 📉' : 'مستقر';
     reasons.push({ bias: 'neutral', text: `النفط (WTI) عند ${oil.value.toFixed(2)}$ — اتجاه ${oilTrendAr} (معلومة سياقية، لا يُحتسب كصوت لضعف الارتباط المباشر بالذهب).`, category: 'oil' });
+  }
+
+  // Volatility state (ATR spike) — informational only, like oil: a spike tells you the SIZE
+  // of the move is unusual, not its direction, so it never votes on buy/sell.
+  if(atrSpike){
+    reasons.push({
+      bias: 'neutral',
+      text: atrSpike.isSpike
+        ? `⚡ تقلب مرتفع بشكل غير معتاد الآن (+${Math.round((atrSpike.ratio - 1) * 100)}% عن المعدل الأخير) — احتمال حركة سعرية عنيفة، توخَّ الحذر في حجم الصفقة والوقف.`
+        : `مستوى التقلب (ATR) طبيعي حاليًا، لا توجد إشارة على حركة غير معتادة.`,
+      category: 'volatility',
+    });
+  }
+
+  // Seasonal tendency — pure backward-looking statistics (informational only, never a vote):
+  // a "usually good month" is a soft historical bias, not a technical signal, and treating it
+  // as one would dilute the confidence score with something that has no causal mechanism.
+  if(seasonal && seasonal.thisMonth && seasonal.thisMonth.sampleSize){
+    const m = seasonal.thisMonth;
+    reasons.push({ bias: 'neutral', text: `📅 تاريخيًا، شهر ${m.name} كان صعوديًا في ${m.winRate}% من السنوات السابقة (متوسط تغيّر ${m.avgPct >= 0 ? '+' : ''}${m.avgPct.toFixed(2)}%، عينة ${m.sampleSize} يوم) — إحصاء موسمي عام، ليس إشارة فنية.`, category: 'seasonal' });
+  }
+  if(seasonal && seasonal.thisWeekday && seasonal.thisWeekday.sampleSize){
+    const w = seasonal.thisWeekday;
+    reasons.push({ bias: 'neutral', text: `📅 يوم ${w.name} تاريخيًا كان صعوديًا في ${w.winRate}% من المرات (متوسط تغيّر ${w.avgPct >= 0 ? '+' : ''}${w.avgPct.toFixed(2)}%، عينة ${w.sampleSize} أسبوع) — إحصاء موسمي عام، ليس إشارة فنية.`, category: 'seasonal' });
   }
 
   const pct = Math.max(-100, Math.min(100, Math.round((score / TOTAL_POSSIBLE_SIGNALS) * 100)));
@@ -2956,7 +3065,7 @@ function renderExecutiveSummary(rec, { trend5m, trend1h, trend4h, trend1d, sr, s
 
   // One row per indicator category, in a fixed, readable order — reusing the exact bias
   // already computed for that category in rec.reasons (single source of truth, no re-deriving).
-  const order = ['rsi','macd','fib','sr','candle','chartPattern','ema','vwap','structure','smc_zone','divergence','regime','dxy','volume','sentiment','silver','oil'];
+  const order = ['rsi','macd','fib','sr','candle','chartPattern','ema','vwap','structure','smc_zone','divergence','regime','dxy','volume','sentiment','silver','oil','volatility','seasonal'];
   order.forEach(cat => {
     const reason = rec.reasons.find(r => r.category === cat);
     if(!reason) return;
@@ -3060,6 +3169,7 @@ const CATEGORY_LABELS_AR = {
   chartPattern: 'نمط فني', ema: 'متوسطات متحركة', vwap: 'VWAP', structure: 'هيكل السوق (SMC)',
   smc_zone: 'Order Block/FVG', divergence: 'انحراف', regime: 'نظام السوق', dxy: 'مؤشر الدولار',
   volume: 'الحجم (OBV)', sentiment: 'تحليل الأخبار (AI)', silver: 'الفضة (XAG)', oil: 'النفط (WTI)',
+  volatility: 'حالة التقلب (ATR)', seasonal: 'التحليل الموسمي',
 };
 
 // Renders the "why this confidence %?" transparency panel: one bar per indicator category
@@ -4515,6 +4625,20 @@ async function loadAsset(asset, fullAnalysis = true){
 
     const upcomingEvent = getUpcomingHighImpactEvent();
 
+    // Sudden ATR volatility-expansion alert — pure computation from candles we already have,
+    // no extra API calls. Only fires ONCE per spike onset (not every poll while it stays
+    // elevated), and specifically calls out when a high-impact event is imminent, since that's
+    // the single most common real-world cause of a genuine spike like this.
+    const atrSpike = detectATRSpike(candles);
+    if(atrSpike && atrSpike.isSpike && !state.lastAtrSpikeActive){
+      const minsToEvent = upcomingEvent ? Math.round((upcomingEvent.dateObj.getTime() - Date.now()) / 60000) : null;
+      const eventPhrase = (minsToEvent != null && minsToEvent > 0 && minsToEvent <= 60)
+        ? ` — وده متزامن مع اقتراب حدث اقتصادي مهم (${upcomingEvent.nameAr}) خلال ${minsToEvent} دقيقة، استعد لحركة سعرية عنيفة.`
+        : ' — راقب عن قرب، قد تكون بداية حركة سعرية قوية.';
+      notify('⚡ تمدد مفاجئ في التقلب (ATR)', `مدى الحركة الحالي أعلى بـ${Math.round((atrSpike.ratio - 1) * 100)}% من المعتاد مؤخرًا${eventPhrase}`, 'nabd-atrspike-' + Date.now(), { requireInteraction: true });
+    }
+    state.lastAtrSpikeActive = Boolean(atrSpike && atrSpike.isSpike);
+
     // DXY: only worth re-fetching on a full analysis (it's a daily-refresh macro filter
     // anyway — see getDXYWithTrend's own 1h cache). Never let a DXY hiccup block analysis.
     let dxy = null;
@@ -4565,8 +4689,18 @@ async function loadAsset(asset, fullAnalysis = true){
       silver = state.frozenSilver || null; oil = state.frozenOil || null;
     }
 
+    // Seasonal stats — cached a full week (see getSeasonalStatsCached), only checked on a
+    // full analysis since it's pure backward-looking statistics that never changes intraday.
+    let seasonal = null;
+    if(fullAnalysis){
+      try{ seasonal = await getSeasonalStatsCached(); }catch(e){ seasonal = null; }
+      state.frozenSeasonal = seasonal;
+    } else {
+      seasonal = state.frozenSeasonal || null;
+    }
+
     const categoryWeights = getCategoryWeightMap();
-    const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, price: livePrice, upcomingEvent, categoryWeights });
+    const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, atrSpike, seasonal, price: livePrice, upcomingEvent, categoryWeights });
     renderExecutiveSummary(rec, { trend5m, trend1h, trend4h: htfTrend, trend1d, sr, structure, price: livePrice, fullAnalysis });
 
     // Hard safety gate: never present an actionable trade recommendation while the
