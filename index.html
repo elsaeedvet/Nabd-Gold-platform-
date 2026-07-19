@@ -352,6 +352,13 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 }
 .exec-change-badge.hidden{ display:none; }
 .exec-change-badge.same{ background: rgba(255,255,255,.04); color: var(--text-dim); border-color: var(--border); }
+
+.circuit-breaker-banner{
+  background: rgba(255,77,94,.1); border:1px solid var(--bear); border-radius:12px;
+  padding:12px; margin-bottom:14px; font-size:12px; line-height:1.7; color: var(--text);
+}
+.circuit-breaker-banner.hidden{ display:none; }
+.circuit-breaker-banner .ghost-btn{ font-size:11px; padding:7px 12px; width:auto; }
 .reasons-list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:9px; }
 .reasons-list li{
   font-size:13.5px; line-height:1.6; padding-right:16px; position:relative; color: var(--text);
@@ -873,6 +880,8 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
       </div>
     </section>
 
+    <div id="circuitBreakerBanner" class="circuit-breaker-banner hidden"></div>
+
     <section class="exec-summary-card">
       <div class="exec-summary-header">
         <h2>📋 الخلاصة الشاملة</h2>
@@ -1120,6 +1129,19 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
     </div>
 
     <div class="setting-group">
+      <label class="setting-label">🚫 قاطع الدائرة (حماية من الخسائر المتتالية)</label>
+      <p class="setting-hint">لو حصل عدد الخسائر المتتالية ده، هيوقف التطبيق توصيات الدخول الجديدة تلقائيًا لفترة تهدئة، بدل الاستمرار في نفس الأسلوب في سوق ممكن يكون مش مناسب له دلوقتي. حط 0 عشان تلغي الميزة دي.</p>
+      <div style="display:flex; gap:10px;">
+        <label style="flex:1;"><span style="font-size:10.5px; color:var(--text-dim);">عدد الخسائر المتتالية</span>
+          <input type="number" id="circuitBreakerLossLimitInput" class="text-input" min="0" max="10" style="width:100%;">
+        </label>
+        <label style="flex:1;"><span style="font-size:10.5px; color:var(--text-dim);">مدة التهدئة (ساعات)</span>
+          <input type="number" id="circuitBreakerCooldownInput" class="text-input" min="0.5" max="48" step="0.5" style="width:100%;">
+        </label>
+      </div>
+    </div>
+
+    <div class="setting-group">
       <label class="setting-label">🎯 الحد الأدنى لنسبة الثقة</label>
       <p class="setting-hint">أي توصية بثقة أقل من الرقم ده هتفضل معروضة للدراسة بس، ومش هتتحول لصفقة متابَعة ولا هتوصلك إشعار دخول بيها. حطّه 0 لإلغاء الفلتر تمامًا.</p>
       <div style="display:flex; align-items:center; gap:10px;">
@@ -1167,7 +1189,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-18-04'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-19-01'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1175,6 +1197,10 @@ const state = {
   backendUrl: localStorage.getItem('nabd_backendUrl') || '',
   minConfidence: parseInt(localStorage.getItem('nabd_minConfidence') || '0', 10),
   autoSpeak: localStorage.getItem('nabd_autoSpeak') === 'true',
+  consecutiveLosses: parseInt(localStorage.getItem('nabd_consecutiveLosses') || '0', 10),
+  circuitBreakerUntil: localStorage.getItem('nabd_circuitBreakerUntil') ? parseInt(localStorage.getItem('nabd_circuitBreakerUntil'), 10) : null,
+  circuitBreakerLossLimit: parseInt(localStorage.getItem('nabd_circuitBreakerLossLimit') || '3', 10),
+  circuitBreakerCooldownHours: parseFloat(localStorage.getItem('nabd_circuitBreakerCooldownHours') || '4'),
   apiKey: localStorage.getItem('nabd_twelveDataKey') || '',
   aiKey: localStorage.getItem('nabd_aiKey') || '',
   candles: { gold: [] },
@@ -1275,6 +1301,12 @@ function recordCategoryOutcomes(categories, isWin){
 
 function addSignalIfNew(rec){
   if(!rec.levels) return;
+  // Circuit breaker: after too many consecutive losses, pause NEW signals for a cooldown
+  // period rather than mechanically keep trying the same approach in what might be a genuinely
+  // bad regime for this strategy right now. Manual override available (resumeCircuitBreaker()).
+  if(state.circuitBreakerUntil && Date.now() < state.circuitBreakerUntil){
+    return;
+  }
   // Minimum-confidence gate: if the user set a threshold (e.g. "ignore anything under 65%"),
   // a lower-confidence setup still shows in the analysis/exec-summary for study, but never
   // becomes an actual tracked signal card or fires an entry notification.
@@ -1349,12 +1381,53 @@ function updateSignalStatuses(livePrice){
       // expiry (never triggered either way) is genuinely ambiguous, so it's skipped.
       if(s.status === 'stop') recordCategoryOutcomes(s.categories, false);
       else if(s.status === 'tp1' || s.status === 'tp2' || s.status === 'tp3') recordCategoryOutcomes(s.categories, true);
+
+      // Circuit breaker bookkeeping: count consecutive stop-outs, reset on any win.
+      if(s.status === 'stop'){
+        state.consecutiveLosses = (state.consecutiveLosses || 0) + 1;
+        localStorage.setItem('nabd_consecutiveLosses', String(state.consecutiveLosses));
+        if(state.circuitBreakerLossLimit > 0 && state.consecutiveLosses >= state.circuitBreakerLossLimit && !(state.circuitBreakerUntil && Date.now() < state.circuitBreakerUntil)){
+          const cooldownMs = state.circuitBreakerCooldownHours * 3600000;
+          state.circuitBreakerUntil = Date.now() + cooldownMs;
+          localStorage.setItem('nabd_circuitBreakerUntil', String(state.circuitBreakerUntil));
+          notify('🚫 قاطع الدائرة: توقف مؤقت للتوصيات', `حصلت ${state.consecutiveLosses} خسائر متتالية — تم إيقاف توصيات الدخول الجديدة لمدة ${state.circuitBreakerCooldownHours} ساعة كإجراء وقائي. تقدر تستأنف يدويًا في أي وقت من الإعدادات.`, 'nabd-breaker-' + Date.now(), { requireInteraction: true });
+        }
+      } else if(s.status === 'tp1' || s.status === 'tp2' || s.status === 'tp3'){
+        state.consecutiveLosses = 0;
+        localStorage.setItem('nabd_consecutiveLosses', '0');
+      }
     }
   });
   // keep the list from growing forever: drop closed signals older than 7 days
   const before = state.signals.length;
   state.signals = state.signals.filter(s => s.status === 'open' || (now - s.closedAt) < 7 * 86400000);
   if(changed || state.signals.length !== before) saveSignals();
+}
+
+function resumeCircuitBreaker(){
+  state.circuitBreakerUntil = null;
+  state.consecutiveLosses = 0;
+  localStorage.removeItem('nabd_circuitBreakerUntil');
+  localStorage.setItem('nabd_consecutiveLosses', '0');
+  showToast('تم استئناف التوصيات يدويًا.');
+  renderCircuitBreakerBanner();
+}
+
+function renderCircuitBreakerBanner(){
+  const el = $('circuitBreakerBanner');
+  if(!el) return;
+  const active = state.circuitBreakerUntil && Date.now() < state.circuitBreakerUntil;
+  if(!active){
+    el.classList.add('hidden');
+    return;
+  }
+  const minsLeft = Math.ceil((state.circuitBreakerUntil - Date.now()) / 60000);
+  const hrs = Math.floor(minsLeft / 60), mins = minsLeft % 60;
+  el.classList.remove('hidden');
+  el.innerHTML = `
+    <span>🚫 قاطع الدائرة نشط — توصيات الدخول الجديدة موقوفة مؤقتًا بعد ${state.consecutiveLosses} خسائر متتالية. يُستأنف تلقائيًا خلال ${hrs}س ${mins}د.</span>
+    <button id="resumeCircuitBreakerBtn" class="ghost-btn" type="button" style="margin-top:6px;">▶️ استئناف الآن يدويًا</button>`;
+  $('resumeCircuitBreakerBtn').addEventListener('click', resumeCircuitBreaker);
 }
 
 function dismissSignal(id){
@@ -2501,7 +2574,7 @@ function chartPatternIcon(name, bias){
 
 const TOTAL_POSSIBLE_SIGNALS = 17; // rsi, macd, fib, sr-support, sr-resistance, candle, chartPattern, ema, vwap, structure(BOS/CHOCH), OB/FVG, divergence, regime-bonus, dxy, volume(OBV), sentiment(AI), silver (oil is informational-only, not a vote)
 
-function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, atrSpike, seasonal, price, upcomingEvent, categoryWeights = {}, atTime = Date.now() }){
+function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, atrSpike, seasonal, newsHistory, price, upcomingEvent, categoryWeights = {}, atTime = Date.now() }){
   let score = 0;
   const votes = [];
   const reasons = [];
@@ -2685,6 +2758,18 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
   if(seasonal && seasonal.thisWeekday && seasonal.thisWeekday.sampleSize){
     const w = seasonal.thisWeekday;
     reasons.push({ bias: 'neutral', text: `📅 يوم ${w.name} تاريخيًا كان صعوديًا في ${w.winRate}% من المرات (متوسط تغيّر ${w.avgPct >= 0 ? '+' : ''}${w.avgPct.toFixed(2)}%، عينة ${w.sampleSize} أسبوع) — إحصاء موسمي عام، ليس إشارة فنية.`, category: 'seasonal' });
+  }
+
+  // Historical reaction to THIS specific upcoming event type — built from the app's own
+  // observations over time (see trackNewsReactions), not a generic assumption. Informational
+  // only: it tells you how BIG the move tends to be and how reliable the textbook direction
+  // has been for this exact release, not which direction to trade right now.
+  if(newsHistory && upcomingEvent){
+    reasons.push({
+      bias: 'neutral',
+      text: `📰 تاريخيًا، "${upcomingEvent.nameAr}" حرّك الذهب بمتوسط ${newsHistory.avgAbsPct.toFixed(2)}% خلال 45 دقيقة من صدوره، وتوافق مع الاتجاه النظري المتوقع في ${newsHistory.matchRate}% من ${newsHistory.sampleSize} مرة سابقة رصدها التطبيق.`,
+      category: 'newsHistory',
+    });
   }
 
   const pct = Math.max(-100, Math.min(100, Math.round((score / TOTAL_POSSIBLE_SIGNALS) * 100)));
@@ -3065,7 +3150,7 @@ function renderExecutiveSummary(rec, { trend5m, trend1h, trend4h, trend1d, sr, s
 
   // One row per indicator category, in a fixed, readable order — reusing the exact bias
   // already computed for that category in rec.reasons (single source of truth, no re-deriving).
-  const order = ['rsi','macd','fib','sr','candle','chartPattern','ema','vwap','structure','smc_zone','divergence','regime','dxy','volume','sentiment','silver','oil','volatility','seasonal'];
+  const order = ['rsi','macd','fib','sr','candle','chartPattern','ema','vwap','structure','smc_zone','divergence','regime','dxy','volume','sentiment','silver','oil','volatility','seasonal','newsHistory'];
   order.forEach(cat => {
     const reason = rec.reasons.find(r => r.category === cat);
     if(!reason) return;
@@ -3169,7 +3254,7 @@ const CATEGORY_LABELS_AR = {
   chartPattern: 'نمط فني', ema: 'متوسطات متحركة', vwap: 'VWAP', structure: 'هيكل السوق (SMC)',
   smc_zone: 'Order Block/FVG', divergence: 'انحراف', regime: 'نظام السوق', dxy: 'مؤشر الدولار',
   volume: 'الحجم (OBV)', sentiment: 'تحليل الأخبار (AI)', silver: 'الفضة (XAG)', oil: 'النفط (WTI)',
-  volatility: 'حالة التقلب (ATR)', seasonal: 'التحليل الموسمي',
+  volatility: 'حالة التقلب (ATR)', seasonal: 'التحليل الموسمي', newsHistory: 'رد الفعل التاريخي للخبر',
 };
 
 // Renders the "why this confidence %?" transparency panel: one bar per indicator category
@@ -3697,6 +3782,77 @@ const BIAS_LABEL = {
   mixed:{ text:'مختلط', cls:'impact-gold-neu' },
   vol: { text:'تقلبات حادة', cls: 'impact-gold-neg' },
 };
+
+/* ===================== Self-building news-reaction history ===================== */
+// HONEST LIMITATION: there's no free historical tick-data source to backfill this from past
+// years, so instead of faking it, the app starts logging its OWN observations going forward
+// from today — every time a calendar event releases its actual number, it notes the
+// theoretical bias (via assessCalendarImpact, already used elsewhere) and then checks back 45
+// minutes later to see what gold actually did. Over time this becomes a real, asset-specific
+// track record ("this exact kind of release has moved OUR price by X% on average, and matched
+// the textbook direction Y% of the time") — far more useful than a generic assumption.
+const REACTION_WINDOW_MS = 45 * 60000;
+const REACTION_LOG_MAX_PER_EVENT = 20;
+
+function getPendingReactions(){
+  try{ return JSON.parse(localStorage.getItem('nabd_pendingReactions') || '[]'); }catch(e){ return []; }
+}
+function savePendingReactions(list){ localStorage.setItem('nabd_pendingReactions', JSON.stringify(list)); }
+
+function getReactionLog(){
+  try{ return JSON.parse(localStorage.getItem('nabd_newsReactionLog') || '{}'); }catch(e){ return {}; }
+}
+function saveReactionLog(log){ localStorage.setItem('nabd_newsReactionLog', JSON.stringify(log)); }
+
+// Called every full analysis: (1) picks up any event that just released its actual number and
+// queues it for a 45-min-later check, (2) finalizes any queued events whose window has elapsed.
+function trackNewsReactions(events, livePrice){
+  if(!events || !events.length) return;
+  const now = Date.now();
+  let pending = getPendingReactions();
+  const seenKeys = new Set(pending.map(p => p.key));
+  const log = getReactionLog();
+  let logChanged = false;
+
+  // (1) queue newly-released events
+  events.forEach(ev => {
+    if(!ev.actual || ev.actual === '') return;
+    const key = ev.date + '|' + ev.title;
+    if(seenKeys.has(key)) return;
+    const releasedRecently = (now - ev.dateObj.getTime()) < 10 * 60000 && (now - ev.dateObj.getTime()) >= 0;
+    if(!releasedRecently) return;
+    const impact = assessCalendarImpact(ev);
+    if(!impact || !impact.goldBias) return;
+    pending.push({ key, eventTitleAr: translateEventName(ev.title), goldBias: impact.goldBias, priceAtEvent: livePrice, dueAt: ev.dateObj.getTime() + REACTION_WINDOW_MS });
+  });
+
+  // (2) finalize anything whose 45-min window has passed
+  const stillPending = [];
+  pending.forEach(p => {
+    if(now < p.dueAt){ stillPending.push(p); return; }
+    const pctChange = (livePrice - p.priceAtEvent) / p.priceAtEvent * 100;
+    const actualDir = pctChange > 0.02 ? 'pos' : pctChange < -0.02 ? 'neg' : 'neu';
+    const matchedTheory = p.goldBias !== 'neu' && p.goldBias !== 'mixed' && actualDir === p.goldBias;
+    if(!log[p.eventTitleAr]) log[p.eventTitleAr] = [];
+    log[p.eventTitleAr].push({ pctChange, matchedTheory, timestamp: now });
+    log[p.eventTitleAr] = log[p.eventTitleAr].slice(-REACTION_LOG_MAX_PER_EVENT);
+    logChanged = true;
+  });
+
+  savePendingReactions(stillPending);
+  if(logChanged) saveReactionLog(log);
+}
+
+// Looks up what THIS specific event type has actually done historically (needs >=3 samples
+// to say anything — otherwise it's just noise from one or two data points).
+function getHistoricalReactionFor(eventTitleAr){
+  const log = getReactionLog();
+  const entries = log[eventTitleAr];
+  if(!entries || entries.length < 3) return null;
+  const avgAbsPct = entries.reduce((a, e) => a + Math.abs(e.pctChange), 0) / entries.length;
+  const matchRate = Math.round((entries.filter(e => e.matchedTheory).length / entries.length) * 100);
+  return { avgAbsPct, matchRate, sampleSize: entries.length };
+}
 
 function normalizeTEEvent(e){
   // TradingEconomics fields: Date, Country, Category/Event, Actual, Forecast, Previous, Importance(1/2/3)
@@ -4625,6 +4781,23 @@ async function loadAsset(asset, fullAnalysis = true){
 
     const upcomingEvent = getUpcomingHighImpactEvent();
 
+    // Self-building news-reaction history: only worth doing on a full analysis (cheap, pure
+    // localStorage bookkeeping, no extra API calls — it reuses state.calendarEvents we already
+    // have and the livePrice we already fetched this cycle).
+    let newsHistory = null;
+    if(fullAnalysis && state.calendarEvents && state.calendarEvents.length){
+      try{ trackNewsReactions(state.calendarEvents, livePrice); }catch(e){ /* non-critical */ }
+      if(upcomingEvent){
+        const minsToUpcoming = (upcomingEvent.dateObj.getTime() - Date.now()) / 60000;
+        if(minsToUpcoming > 0 && minsToUpcoming <= 60){
+          newsHistory = getHistoricalReactionFor(upcomingEvent.nameAr);
+        }
+      }
+      state.frozenNewsHistory = newsHistory;
+    } else {
+      newsHistory = state.frozenNewsHistory || null;
+    }
+
     // Sudden ATR volatility-expansion alert — pure computation from candles we already have,
     // no extra API calls. Only fires ONCE per spike onset (not every poll while it stays
     // elevated), and specifically calls out when a high-impact event is imminent, since that's
@@ -4700,7 +4873,7 @@ async function loadAsset(asset, fullAnalysis = true){
     }
 
     const categoryWeights = getCategoryWeightMap();
-    const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, atrSpike, seasonal, price: livePrice, upcomingEvent, categoryWeights });
+    const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, atrSpike, seasonal, newsHistory, price: livePrice, upcomingEvent, categoryWeights });
     renderExecutiveSummary(rec, { trend5m, trend1h, trend4h: htfTrend, trend1d, sr, structure, price: livePrice, fullAnalysis });
 
     // Hard safety gate: never present an actionable trade recommendation while the
@@ -4715,6 +4888,7 @@ async function loadAsset(asset, fullAnalysis = true){
 
     // check every locked signal against the current price on EVERY refresh (full or price-only)
     updateSignalStatuses(livePrice);
+    renderCircuitBreakerBanner();
     // then run the live trade-management "robot" pass over every still-open signal using the
     // freshest indicator readings available (even on price-only refreshes, rsi/macd/divergence
     // above are always recomputed from the latest candles — only the deeper SMC structure is
@@ -4796,6 +4970,8 @@ function openSettings(){
   $('backendUrlInput').value = state.backendUrl;
   $('minConfidenceSlider').value = state.minConfidence;
   $('autoSpeakToggle').checked = state.autoSpeak;
+  $('circuitBreakerLossLimitInput').value = state.circuitBreakerLossLimit;
+  $('circuitBreakerCooldownInput').value = state.circuitBreakerCooldownHours;
   $('minConfidenceValue').textContent = state.minConfidence + '%';
   const iset = state.indicatorSettings;
   $('setRsiPeriod').value = iset.rsiPeriod;
@@ -4828,6 +5004,10 @@ function saveSettings(){
   localStorage.setItem('nabd_minConfidence', String(state.minConfidence));
   state.autoSpeak = $('autoSpeakToggle').checked;
   localStorage.setItem('nabd_autoSpeak', String(state.autoSpeak));
+  state.circuitBreakerLossLimit = parseInt($('circuitBreakerLossLimitInput').value, 10) || 0;
+  localStorage.setItem('nabd_circuitBreakerLossLimit', String(state.circuitBreakerLossLimit));
+  state.circuitBreakerCooldownHours = parseFloat($('circuitBreakerCooldownInput').value) || 4;
+  localStorage.setItem('nabd_circuitBreakerCooldownHours', String(state.circuitBreakerCooldownHours));
   localStorage.setItem('nabd_goldSource', selected);
   localStorage.setItem('nabd_twelveDataKey', key);
   localStorage.setItem('nabd_aiKey', aiKey);
@@ -5210,6 +5390,14 @@ function init(){
   $('buildStamp').textContent = APP_BUILD;
   state.signals = loadSignals();
   renderSignalCards();
+  renderCircuitBreakerBanner();
+  setInterval(renderCircuitBreakerBanner, 60000); // keep the countdown text fresh even while the market is closed
+
+  // restore the user's last-entered account balance / risk % so they don't retype it every visit
+  const savedBalance = localStorage.getItem('nabd_riskBalance');
+  const savedRiskPct = localStorage.getItem('nabd_riskPct');
+  if(savedBalance) $('riskBalance').value = savedBalance;
+  if(savedRiskPct) $('riskPct').value = savedRiskPct;
 
   $('settingsBtn').addEventListener('click', openSettings);
   $('closeSettings').addEventListener('click', closeSettings);
@@ -5276,8 +5464,14 @@ function init(){
 
   $('shouldEnterBtn').addEventListener('click', evaluateShouldEnter);
   $('verdictClose').addEventListener('click', () => $('verdictBanner').classList.add('hidden'));
-  $('riskBalance').addEventListener('input', updateRiskCalculator);
-  $('riskPct').addEventListener('input', updateRiskCalculator);
+  $('riskBalance').addEventListener('input', () => {
+    localStorage.setItem('nabd_riskBalance', $('riskBalance').value);
+    updateRiskCalculator();
+  });
+  $('riskPct').addEventListener('input', () => {
+    localStorage.setItem('nabd_riskPct', $('riskPct').value);
+    updateRiskCalculator();
+  });
   $('backtestBtn').addEventListener('click', runBacktestUI);
 
   window.addEventListener('resize', () => {
