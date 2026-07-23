@@ -536,6 +536,45 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 .signal-reasons{ list-style:none; margin:8px 0 0; padding:0; display:flex; flex-direction:column; gap:4px; }
 .signal-reasons li{ font-size:11px; color: var(--text-dim); line-height:1.5; padding-right:12px; position:relative; }
 .signal-reasons li::before{ content:"•"; position:absolute; right:0; color: var(--gold-glow); }
+.journal-note-row{ margin-top:10px; }
+.journal-note-input{
+  width:100%; min-height:44px; resize:vertical; background: var(--surface-2);
+  border:1px solid var(--border); border-radius:8px; padding:8px 10px; font-size:11.5px;
+  color: var(--text); font-family: inherit; line-height:1.6;
+}
+.journal-note-input:focus{ outline:none; border-color: var(--gold); }
+.perf-stats-box{
+  background: var(--surface-2); border-radius:10px; padding:12px; font-size:12px; line-height:1.9;
+}
+.perf-stats-box .perf-row{ display:flex; justify-content:space-between; }
+.perf-stats-box .perf-row strong{ color: var(--gold-glow); }
+.assets-ticker-card{ background: var(--surface); border-radius:14px; padding:14px 16px; margin-bottom:14px; }
+.assets-ticker-row{ display:flex; gap:10px; overflow-x:auto; padding-bottom:2px; }
+.asset-ticker-box{
+  flex:0 0 auto; min-width:110px; background: var(--surface-2); border-radius:10px;
+  padding:10px 12px; text-align:center;
+}
+.asset-ticker-name{ font-size:10.5px; color: var(--text-dim); margin-bottom:4px; }
+.asset-ticker-price{ font-family: var(--font-mono); font-size:13px; font-weight:700; }
+.asset-ticker-change{ font-size:10.5px; margin-top:2px; }
+.asset-ticker-change.up{ color: var(--bull); }
+.asset-ticker-change.down{ color: var(--bear); }
+
+.ai-chat-content{ display:flex; flex-direction:column; max-height:85vh; }
+.ai-chat-messages{
+  flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px;
+  padding:10px 2px; min-height:200px; max-height:50vh;
+}
+.ai-chat-msg{
+  max-width:88%; padding:10px 13px; border-radius:14px; font-size:12.5px; line-height:1.7;
+  white-space:pre-line;
+}
+.ai-chat-msg.user{ align-self:flex-end; background: var(--gold); color:#0A0D14; font-weight:600; border-bottom-left-radius:4px; }
+.ai-chat-msg.assistant{ align-self:flex-start; background: var(--surface-2); color: var(--text); border-bottom-right-radius:4px; }
+.ai-chat-status{ font-size:11px; color: var(--text-dim); min-height:16px; padding:2px 4px; }
+.ai-chat-input-row{ display:flex; gap:8px; align-items:flex-end; margin-top:6px; }
+.ai-chat-input-row .journal-note-input{ flex:1; }
+.ai-chat-input-row .primary-btn{ width:auto; padding:12px 18px; }
 
 /* ---------- candle pattern updated ---------- */
 .candle-pattern{
@@ -758,6 +797,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 @keyframes spin{ to{ transform:rotate(360deg); } }
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 </head>
 <body style="background:#0A0D14;color:#F3F1EA;">
 
@@ -773,6 +813,8 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
       <h1>نبض</h1>
     </div>
     <div class="header-actions">
+      <button id="aiChatBtn" class="icon-btn" aria-label="اسأل نبض" type="button">💬</button>
+      <button id="performanceBtn" class="icon-btn" aria-label="الأداء" type="button">📊</button>
       <button id="notifInboxBtn" class="icon-btn" aria-label="صندوق الإشعارات" type="button" style="position:relative;">
         <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
         <span id="notifBadge" class="notif-badge hidden">0</span>
@@ -838,6 +880,13 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
     <section class="sessions-card">
       <h2>🕐 جلسات التداول العالمية</h2>
       <div id="sessionsRow" class="sessions-row"></div>
+    </section>
+
+    <section class="assets-ticker-card">
+      <h2>🌐 أصول أخرى (معلومة سياقية)</h2>
+      <div id="assetsTickerRow" class="assets-ticker-row">
+        <span class="news-loading">جارٍ التحميل…</span>
+      </div>
     </section>
 
     <section class="decision-card">
@@ -907,6 +956,69 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
         <ul id="execHistoryList" class="notif-inbox-list">
           <li class="news-loading">لا يوجد سجل بعد.</li>
         </ul>
+      </div>
+    </div>
+
+    <div id="performanceModal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>📊 الأداء</h3>
+          <button id="closePerformance" class="icon-btn" type="button">✕</button>
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label">🤖 أداء توصيات نبض (الروبوت)</label>
+          <div id="robotStatsBox" class="perf-stats-box">—</div>
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label">✍️ صفقاتك اليدوية (خارج توصيات نبض)</label>
+          <p class="setting-hint">سجّل هنا أي صفقة نفّذتها بقرارك الشخصي (مش من توصية نبض) عشان تقارن أداءك بأداء الروبوت.</p>
+          <div style="display:flex; gap:8px; margin-bottom:10px;">
+            <select id="manualTradeDir" class="text-input" style="flex:1;">
+              <option value="buy">شراء 📈</option>
+              <option value="sell">بيع 📉</option>
+            </select>
+            <select id="manualTradeResult" class="text-input" style="flex:1;">
+              <option value="win">ربح ✅</option>
+              <option value="loss">خسارة ❌</option>
+            </select>
+          </div>
+          <input type="text" id="manualTradeNote" class="text-input" placeholder="ملاحظة مختصرة (اختياري)" style="width:100%; margin-bottom:8px;">
+          <button id="addManualTradeBtn" class="ghost-btn" type="button" style="width:100%;">➕ إضافة صفقة يدوية</button>
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label">⚖️ المقارنة</label>
+          <div id="comparisonBox" class="perf-stats-box">—</div>
+        </div>
+
+        <ul id="manualTradesList" class="notif-inbox-list"></ul>
+
+        <div class="modal-actions">
+          <button id="exportPdfBtn" class="primary-btn" type="button">📄 تصدير تقرير PDF</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="aiChatModal" class="modal hidden">
+      <div class="modal-content ai-chat-content">
+        <div class="modal-header">
+          <h3>💬 اسأل نبض</h3>
+          <div style="display:flex; gap:6px;">
+            <button id="clearAiChatBtn" class="icon-btn" type="button" title="مسح المحادثة">🗑️</button>
+            <button id="closeAiChat" class="icon-btn" type="button">✕</button>
+          </div>
+        </div>
+        <p class="setting-hint">بيستخدم مفتاح Anthropic بتاعك ومعاه سياق التحليل الحالي (السعر، التوصية، المؤشرات) — تقدر تسأله أي حاجة عن السوق أو التطبيق أو تحليل معيّن.</p>
+        <div id="aiChatMessages" class="ai-chat-messages">
+          <div class="ai-chat-msg assistant">أهلاً! أنا هنا أساعدك تفهم أي حاجة في تحليل نبض الحالي أو أي سؤال عن التداول عمومًا. اسأل براحتك.</div>
+        </div>
+        <div id="aiChatStatus" class="ai-chat-status"></div>
+        <div class="ai-chat-input-row">
+          <textarea id="aiChatInput" class="journal-note-input" placeholder="اكتب سؤالك هنا…" rows="2"></textarea>
+          <button id="sendAiChatBtn" class="primary-btn" type="button">إرسال</button>
+        </div>
       </div>
     </div>
 
@@ -1189,7 +1301,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-19-01'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-23-02'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1747,6 +1859,39 @@ async function getCorrelatedAssetTrend(symbol, cacheKey){
   const next = { previous: cache ? cache.current : null, current: fresh };
   localStorage.setItem(cacheKey, JSON.stringify(next));
   return { value: fresh.value, trend: getSimpleTrend(fresh, next.previous) };
+}
+
+/* ===================== Other-assets ticker (informational, not a full trading engine) ===================== */
+// A genuine independent trading engine per asset (silver/oil/bitcoin, each with its own
+// candles, signals, and UI) would need a much larger restructuring of this single-page app —
+// almost everything here assumes "gold" as THE asset. Rather than half-build that and risk
+// breaking the gold analysis, this gives real, always-live context on other markets instead:
+// Bitcoin (always free via Binance) plus silver/oil (only with a TwelveData key, reusing the
+// same correlation fetches already built) — refreshed only on full analysis.
+async function renderAssetsTicker(silver, oil){
+  const row = $('assetsTickerRow');
+  const boxes = [];
+  try{
+    const btc = await fetchBinanceTicker('BTCUSDT');
+    boxes.push({ name: '₿ بيتكوين', price: btc.price.toLocaleString('en-US', { maximumFractionDigits: 0 }), change: btc.changePercent });
+  }catch(e){ /* non-critical */ }
+  if(silver) boxes.push({ name: '🥈 الفضة (XAG)', price: silver.value.toFixed(2), change: null, trend: silver.trend });
+  if(oil) boxes.push({ name: '🛢️ النفط (WTI)', price: oil.value.toFixed(2), change: null, trend: oil.trend });
+
+  if(!boxes.length){
+    row.innerHTML = '<span class="news-loading">مفيش بيانات متاحة حاليًا (الفضة والنفط محتاجين مفتاح TwelveData).</span>';
+    return;
+  }
+  row.innerHTML = boxes.map(b => {
+    let changeHtml = '';
+    if(b.change != null){
+      changeHtml = `<div class="asset-ticker-change ${b.change >= 0 ? 'up' : 'down'}">${b.change >= 0 ? '▲' : '▼'} ${Math.abs(b.change).toFixed(2)}%</div>`;
+    } else if(b.trend){
+      const arrow = b.trend === 'up' ? '▲' : b.trend === 'down' ? '▼' : '—';
+      changeHtml = `<div class="asset-ticker-change ${b.trend === 'up' ? 'up' : b.trend === 'down' ? 'down' : ''}">${arrow}</div>`;
+    }
+    return `<div class="asset-ticker-box"><div class="asset-ticker-name">${b.name}</div><div class="asset-ticker-price">$${b.price}</div>${changeHtml}</div>`;
+  }).join('');
 }
 
 async function fetchTwelveDataPrice(apikey){
@@ -3388,8 +3533,20 @@ function renderSignalCards(){
           <span class="signal-advisory-text">${escapeHtml(s.advisory.text)}</span>
         </div>`;
       })() : ''}
+      <div class="journal-note-row">
+        <textarea class="journal-note-input" placeholder="✍️ ملاحظتك الشخصية على الصفقة دي (اختياري)…" data-id="${s.id}">${escapeHtml(s.note || '')}</textarea>
+      </div>
     `;
     card.querySelector('.signal-dismiss').addEventListener('click', () => dismissSignal(s.id));
+    const noteInput = card.querySelector('.journal-note-input');
+    let noteSaveTimer = null;
+    noteInput.addEventListener('input', () => {
+      clearTimeout(noteSaveTimer);
+      noteSaveTimer = setTimeout(() => {
+        const sig = state.signals.find(x => x.id === s.id);
+        if(sig){ sig.note = noteInput.value; saveSignals(); }
+      }, 600); // debounce so we're not writing to localStorage on every keystroke
+    });
     list.appendChild(card);
   });
 }
@@ -4077,6 +4234,221 @@ function speakCurrentSummary(){
 }
 
 function closeExecHistory(){ $('execHistoryModal').classList.add('hidden'); }
+
+/* ===================== Performance panel: robot stats, manual trade log, comparison, PDF ===================== */
+function getManualTrades(){
+  try{ return JSON.parse(localStorage.getItem('nabd_manualTrades') || '[]'); }catch(e){ return []; }
+}
+function saveManualTrades(list){ localStorage.setItem('nabd_manualTrades', JSON.stringify(list)); }
+
+function computeRobotStats(){
+  const closed = state.signals.filter(s => s.status !== 'open' && s.status !== 'expired');
+  const wins = closed.filter(s => s.status === 'tp1' || s.status === 'tp2' || s.status === 'tp3');
+  const losses = closed.filter(s => s.status === 'stop');
+  const winRate = closed.length ? Math.round((wins.length / closed.length) * 100) : null;
+  return { total: closed.length, wins: wins.length, losses: losses.length, winRate };
+}
+
+function computeManualStats(){
+  const trades = getManualTrades();
+  const wins = trades.filter(t => t.result === 'win').length;
+  const winRate = trades.length ? Math.round((wins / trades.length) * 100) : null;
+  return { total: trades.length, wins, losses: trades.length - wins, winRate };
+}
+
+function renderPerformancePanel(){
+  const robot = computeRobotStats();
+  const manual = computeManualStats();
+
+  $('robotStatsBox').innerHTML = robot.total ? `
+    <div class="perf-row"><span>إجمالي التوصيات المُقفلة</span><strong>${robot.total}</strong></div>
+    <div class="perf-row"><span>أرباح (أهداف)</span><strong>${robot.wins}</strong></div>
+    <div class="perf-row"><span>خسائر (وقف)</span><strong>${robot.losses}</strong></div>
+    <div class="perf-row"><span>نسبة النجاح</span><strong>${robot.winRate}%</strong></div>
+  ` : '<div class="perf-row"><span>لا توجد توصيات مُقفلة بعد.</span></div>';
+
+  const list = $('manualTradesList');
+  const trades = getManualTrades();
+  if(!trades.length){
+    list.innerHTML = '<li class="news-loading">لا توجد صفقات يدوية مسجّلة بعد.</li>';
+  } else {
+    list.innerHTML = trades.slice().reverse().map(t => `
+      <li class="notif-inbox-item" data-id="${t.id}">
+        <div class="notif-inbox-row">
+          <span class="notif-inbox-title">${t.direction === 'buy' ? '📈 شراء' : '📉 بيع'} — ${t.result === 'win' ? '✅ ربح' : '❌ خسارة'}</span>
+          <span class="notif-inbox-time">${formatTimeAgo(t.timestamp)}</span>
+        </div>
+        ${t.note ? `<div class="notif-inbox-body">${escapeHtml(t.note)}</div>` : ''}
+      </li>
+    `).join('');
+  }
+
+  if(robot.winRate == null && manual.winRate == null){
+    $('comparisonBox').innerHTML = '<div class="perf-row"><span>مفيش بيانات كافية للمقارنة لسه.</span></div>';
+  } else {
+    const diff = (robot.winRate != null && manual.winRate != null) ? robot.winRate - manual.winRate : null;
+    $('comparisonBox').innerHTML = `
+      <div class="perf-row"><span>نسبة نجاح الروبوت</span><strong>${robot.winRate != null ? robot.winRate + '%' : '—'}</strong></div>
+      <div class="perf-row"><span>نسبة نجاح صفقاتك اليدوية</span><strong>${manual.winRate != null ? manual.winRate + '%' : '—'}</strong></div>
+      ${diff != null ? `<div class="perf-row"><span>الفرق</span><strong style="color:${diff >= 0 ? 'var(--bull)' : 'var(--bear)'}">${diff >= 0 ? '+' : ''}${diff}%</strong></div>` : ''}
+    `;
+  }
+}
+
+function addManualTrade(){
+  const direction = $('manualTradeDir').value;
+  const result = $('manualTradeResult').value;
+  const note = $('manualTradeNote').value.trim();
+  const trades = getManualTrades();
+  trades.push({ id: 'mt_' + Date.now(), direction, result, note, timestamp: Date.now() });
+  saveManualTrades(trades);
+  $('manualTradeNote').value = '';
+  renderPerformancePanel();
+  showToast('تم تسجيل الصفقة اليدوية.');
+}
+
+function openPerformancePanel(){ $('performanceModal').classList.remove('hidden'); renderPerformancePanel(); }
+function closePerformancePanel(){ $('performanceModal').classList.add('hidden'); }
+
+function exportPerformancePdf(){
+  if(!window.jspdf){ showToast('تعذر تحميل مكتبة PDF — تأكد من اتصالك بالإنترنت وحاول تاني.'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const robot = computeRobotStats();
+  const manual = computeManualStats();
+  const dateStr = new Date().toLocaleDateString('en-GB');
+
+  let y = 20;
+  doc.setFontSize(18);
+  doc.text('Nabd - Performance Report', 20, y); y += 8;
+  doc.setFontSize(10);
+  doc.text(`Generated: ${dateStr}`, 20, y); y += 12;
+
+  doc.setFontSize(13);
+  doc.text('Robot (Nabd) Signals', 20, y); y += 7;
+  doc.setFontSize(10);
+  doc.text(`Total closed: ${robot.total}   Wins: ${robot.wins}   Losses: ${robot.losses}   Win rate: ${robot.winRate != null ? robot.winRate + '%' : 'N/A'}`, 20, y); y += 12;
+
+  doc.setFontSize(13);
+  doc.text('Manual Trades', 20, y); y += 7;
+  doc.setFontSize(10);
+  doc.text(`Total: ${manual.total}   Wins: ${manual.wins}   Losses: ${manual.losses}   Win rate: ${manual.winRate != null ? manual.winRate + '%' : 'N/A'}`, 20, y); y += 12;
+
+  if(robot.winRate != null && manual.winRate != null){
+    doc.setFontSize(13);
+    doc.text('Comparison', 20, y); y += 7;
+    doc.setFontSize(10);
+    const diff = robot.winRate - manual.winRate;
+    doc.text(`Robot vs Manual win-rate difference: ${diff >= 0 ? '+' : ''}${diff}%`, 20, y); y += 12;
+  }
+
+  doc.setFontSize(13);
+  doc.text('Closed Signal Log', 20, y); y += 7;
+  doc.setFontSize(9);
+  const closed = state.signals.filter(s => s.status !== 'open' && s.status !== 'expired').slice(0, 40);
+  closed.forEach(s => {
+    if(y > 280){ doc.addPage(); y = 20; }
+    const dateS = new Date(s.closedAt || s.createdAt).toLocaleDateString('en-GB');
+    doc.text(`${dateS}  ${s.direction.toUpperCase()}  entry:${s.entry.toFixed(2)}  status:${s.status}  conf:${s.confidence}%`, 20, y);
+    y += 6;
+  });
+
+  doc.save(`nabd-performance-${Date.now()}.pdf`);
+}
+
+/* ===================== In-app AI chat (uses the user's own Anthropic key) ===================== */
+// Free-form Q&A, but every request includes a fresh snapshot of the CURRENT market context
+// (price, recommendation, top reasons, upcoming event) as a system prompt, so questions like
+// "why is it a buy right now?" get a grounded answer instead of a generic one. History is kept
+// in memory + localStorage (capped) across the same style as everything else in this file.
+const AI_CHAT_HISTORY_MAX = 20; // messages (user+assistant combined), keeps token cost sane
+
+function getAiChatHistory(){
+  try{ return JSON.parse(localStorage.getItem('nabd_aiChatHistory') || '[]'); }catch(e){ return []; }
+}
+function saveAiChatHistory(history){
+  localStorage.setItem('nabd_aiChatHistory', JSON.stringify(history.slice(-AI_CHAT_HISTORY_MAX)));
+}
+
+function buildChatSystemContext(){
+  const rec = state.lastRec;
+  if(!rec) return 'لا يوجد تحليل حالي متاح بعد — جاوب المستخدم بأفضل معرفتك العامة عن التداول، ووضّح إنك مش شايف بيانات حية دلوقتي.';
+  const topReasons = (rec.reasons || []).slice(0, 6).map(r => `- ${r.text}`).join('\n');
+  const priceLine = state.lastLivePrice != null ? `السعر الحالي: ${formatPrice(state.lastLivePrice)}` : '';
+  return `أنت مساعد ذكي داخل تطبيق تداول الذهب "نبض". دي لقطة من التحليل الحالي:
+${priceLine}
+التوصية الحالية: ${rec.label || 'غير محدد'} (نسبة الثقة: ${rec.confidence != null ? rec.confidence + '%' : 'غير متاحة'})
+أهم الأسباب:
+${topReasons || 'لا توجد بعد'}
+
+جاوب على أسئلة المستخدم بالعربية، بإيجاز ووضوح، بالاستناد على البيانات دي لما يكون سؤاله عنها. لو سأل حاجة عامة عن التداول أو المؤشرات الفنية، جاوبه بمعرفتك العامة. لو سأل عن حاجة تقنية في التطبيق نفسه (إعدادات، ميزات)، جاوب بأفضل فهمك لتطبيق نبض. خلي إجاباتك مختصرة ومركّزة (فقرة أو فقرتين كحد أقصى) إلا لو طلب تفصيل أكتر.`;
+}
+
+function renderAiChatMessages(){
+  const box = $('aiChatMessages');
+  const history = getAiChatHistory();
+  box.innerHTML = history.map(m => `<div class="ai-chat-msg ${m.role === 'user' ? 'user' : 'assistant'}">${escapeHtml(m.content)}</div>`).join('')
+    || '<div class="ai-chat-msg assistant">أهلاً! اسأل براحتك عن التحليل الحالي أو أي حاجة تانية.</div>';
+  box.scrollTop = box.scrollHeight;
+}
+
+async function sendAiChatMessage(){
+  const input = $('aiChatInput');
+  const text = input.value.trim();
+  if(!text) return;
+  if(!state.aiKey){
+    $('aiChatStatus').textContent = '⚠️ محتاج تحط مفتاح Anthropic API في الإعدادات الأول.';
+    return;
+  }
+
+  let history = getAiChatHistory();
+  history.push({ role: 'user', content: text });
+  saveAiChatHistory(history);
+  renderAiChatMessages();
+  input.value = '';
+  $('sendAiChatBtn').disabled = true;
+  $('aiChatStatus').textContent = '⏳ نبض بيفكر…';
+
+  try{
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': state.aiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 700,
+        system: buildChatSystemContext(),
+        messages: history.map(m => ({ role: m.role, content: m.content })),
+      }),
+    });
+    if(!res.ok) throw new Error('طلب فشل (' + res.status + ')');
+    const data = await res.json();
+    const block = (data.content || []).find(b => b.type === 'text');
+    const reply = block ? block.text.trim() : 'معلش، مقدرتش أجاوب دلوقتي.';
+    history = getAiChatHistory();
+    history.push({ role: 'assistant', content: reply });
+    saveAiChatHistory(history);
+    renderAiChatMessages();
+    $('aiChatStatus').textContent = '';
+  }catch(e){
+    $('aiChatStatus').textContent = '❌ حصل خطأ: ' + e.message;
+  } finally {
+    $('sendAiChatBtn').disabled = false;
+  }
+}
+
+function openAiChat(){ $('aiChatModal').classList.remove('hidden'); renderAiChatMessages(); }
+function closeAiChat(){ $('aiChatModal').classList.add('hidden'); }
+function clearAiChat(){
+  localStorage.removeItem('nabd_aiChatHistory');
+  renderAiChatMessages();
+  showToast('تم مسح المحادثة.');
+}
+
 
 async function saveNotifRecord(record){
   const db = await openNotifDB();
@@ -4858,6 +5230,7 @@ async function loadAsset(asset, fullAnalysis = true){
       try{ silver = await getCorrelatedAssetTrend('XAG/USD', 'nabd_silverCache'); }catch(e){ silver = null; }
       try{ oil = await getCorrelatedAssetTrend('WTI/USD', 'nabd_oilCache'); }catch(e){ oil = null; }
       state.frozenSilver = silver; state.frozenOil = oil;
+      renderAssetsTicker(silver, oil).catch(() => {});
     } else {
       silver = state.frozenSilver || null; oil = state.frozenOil || null;
     }
@@ -4910,6 +5283,7 @@ async function loadAsset(asset, fullAnalysis = true){
       state.frozenFVG.gold = fvg;
       state.frozenHtfTrend.gold = htfTrend;
       state.lastRec = rec;
+      state.lastLivePrice = livePrice;
       renderAll({ asset, livePrice, changePercent, sourceLabel, candles, rsi, macd, fib, sr, ema, atr, boll, vwap, candlePattern, chartPattern, structure, orderBlocks, fvg, divergence, regime, htfTrend, rec, renderLevels: true });
       updateAnalysisTimestamp(asset);
       renderAIAnalysis(null);
@@ -5407,6 +5781,19 @@ function init(){
   $('notifInboxBtn').addEventListener('click', openNotifInbox);
   $('closeNotifInbox').addEventListener('click', closeNotifInbox);
   $('execHistoryBtn').addEventListener('click', openExecHistory);
+  $('performanceBtn').addEventListener('click', openPerformancePanel);
+  $('aiChatBtn').addEventListener('click', openAiChat);
+  $('closeAiChat').addEventListener('click', closeAiChat);
+  $('clearAiChatBtn').addEventListener('click', clearAiChat);
+  $('aiChatModal').addEventListener('click', e => { if(e.target.id === 'aiChatModal') closeAiChat(); });
+  $('sendAiChatBtn').addEventListener('click', sendAiChatMessage);
+  $('aiChatInput').addEventListener('keydown', e => {
+    if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); sendAiChatMessage(); }
+  });
+  $('closePerformance').addEventListener('click', closePerformancePanel);
+  $('performanceModal').addEventListener('click', e => { if(e.target.id === 'performanceModal') closePerformancePanel(); });
+  $('addManualTradeBtn').addEventListener('click', addManualTrade);
+  $('exportPdfBtn').addEventListener('click', exportPerformancePdf);
   $('speakSummaryBtn').addEventListener('click', speakCurrentSummary);
   $('closeExecHistory').addEventListener('click', closeExecHistory);
   $('execHistoryModal').addEventListener('click', e => { if(e.target.id === 'execHistoryModal') closeExecHistory(); });
