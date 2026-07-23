@@ -1301,7 +1301,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-23-02'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-23-03'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -4419,7 +4419,7 @@ async function sendAiChatMessage(){
         'anthropic-dangerous-direct-browser-access': 'true',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: 'claude-sonnet-5',
         max_tokens: 700,
         system: buildChatSystemContext(),
         messages: history.map(m => ({ role: m.role, content: m.content })),
@@ -4964,7 +4964,7 @@ async function fetchNewsSentiment(events){
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-sonnet-5',
       max_tokens: 300,
       messages: [{ role: 'user', content: prompt }],
     }),
@@ -5034,7 +5034,7 @@ async function fetchAIAnalysis(ctx){
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-sonnet-5',
       max_tokens: 500,
       messages: [{ role: 'user', content: prompt }],
     }),
