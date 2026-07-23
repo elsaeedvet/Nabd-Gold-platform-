@@ -1301,7 +1301,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-23-03'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-23-04'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -4392,6 +4392,24 @@ function renderAiChatMessages(){
   box.scrollTop = box.scrollHeight;
 }
 
+// Anthropic's API rejects any request where messages don't strictly alternate
+// user/assistant/user/assistant... A failed send (e.g. the earlier bad-model-name bug) leaves
+// a "user" message with no matching "assistant" reply, and the NEXT message then creates two
+// user messages in a row — which is exactly what caused this same 400 error to persist even
+// after the model name was fixed. This merges any consecutive same-role messages together so
+// the payload sent to the API is always valid, regardless of what's sitting in history.
+function sanitizeChatHistory(history){
+  const merged = [];
+  history.forEach(m => {
+    const last = merged[merged.length - 1];
+    if(last && last.role === m.role) last.content += '\n\n' + m.content;
+    else merged.push({ role: m.role, content: m.content });
+  });
+  // must also start with a 'user' message, or the API rejects it
+  while(merged.length && merged[0].role !== 'user') merged.shift();
+  return merged;
+}
+
 async function sendAiChatMessage(){
   const input = $('aiChatInput');
   const text = input.value.trim();
@@ -4422,10 +4440,16 @@ async function sendAiChatMessage(){
         model: 'claude-sonnet-5',
         max_tokens: 700,
         system: buildChatSystemContext(),
-        messages: history.map(m => ({ role: m.role, content: m.content })),
+        messages: sanitizeChatHistory(history),
       }),
     });
-    if(!res.ok) throw new Error('طلب فشل (' + res.status + ')');
+    if(!res.ok){
+      const errBody = await res.text().catch(() => '');
+      console.error('AI chat request failed:', res.status, errBody);
+      let detail = '';
+      try{ detail = JSON.parse(errBody).error?.message || ''; }catch(e){ /* not JSON */ }
+      throw new Error(`طلب فشل (${res.status})${detail ? ': ' + detail : ''}`);
+    }
     const data = await res.json();
     const block = (data.content || []).find(b => b.type === 'text');
     const reply = block ? block.text.trim() : 'معلش، مقدرتش أجاوب دلوقتي.';
