@@ -1233,6 +1233,23 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
     </div>
 
     <div class="setting-group">
+      <label class="setting-label">💬 شات "اسأل نبض" — اختيار المزود</label>
+      <p class="setting-hint">Anthropic مدفوع (لازم رصيد). Gemini مجاني تمامًا من Google بدون بطاقة ائتمان — اختار اللي مناسب لك للشات فقط (التحليل العميق وتحليل المشاعر فوق لسه بيستخدموا Anthropic).</p>
+      <label class="radio-row">
+        <input type="radio" name="aiProvider" value="anthropic" checked>
+        <span><strong>Anthropic (Claude)</strong><small>يحتاج رصيد مدفوع في حسابك</small></span>
+      </label>
+      <label class="radio-row">
+        <input type="radio" name="aiProvider" value="gemini">
+        <span><strong>Google Gemini</strong><small>مجاني تمامًا — بدون بطاقة ائتمان</small></span>
+      </label>
+      <div class="apikey-row" id="geminiKeyRow" style="margin-top:8px;">
+        <input type="text" id="geminiKeyInput" placeholder="ضع مفتاح Gemini API هنا" autocomplete="off">
+        <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">احصل على مفتاح مجاني من Google AI Studio</a>
+      </div>
+    </div>
+
+    <div class="setting-group">
       <label class="setting-label">🔊 القراءة الصوتية</label>
       <label class="radio-row" style="cursor:pointer;">
         <input type="checkbox" id="autoSpeakToggle">
@@ -1301,7 +1318,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-23-04'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-23-05'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1315,6 +1332,8 @@ const state = {
   circuitBreakerCooldownHours: parseFloat(localStorage.getItem('nabd_circuitBreakerCooldownHours') || '4'),
   apiKey: localStorage.getItem('nabd_twelveDataKey') || '',
   aiKey: localStorage.getItem('nabd_aiKey') || '',
+  aiProvider: localStorage.getItem('nabd_aiProvider') || 'anthropic',
+  geminiKey: localStorage.getItem('nabd_geminiKey') || '',
   candles: { gold: [] },
   frozenLevels: { gold: null },
   frozenAnalysisTime: { gold: null },
@@ -4410,12 +4429,75 @@ function sanitizeChatHistory(history){
   return merged;
 }
 
+// Gemini uses a different request/response shape than Anthropic: roles are 'user'/'model'
+// (not 'assistant'), and the system prompt is a separate top-level field. Converts our
+// internal history format to Gemini's on the fly so the rest of the chat code stays identical
+// regardless of which provider is active.
+async function fetchGeminiReply(history, systemContext){
+  const contents = sanitizeChatHistory(history).map(m => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.content }],
+  }));
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${state.geminiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents,
+      systemInstruction: { parts: [{ text: systemContext }] },
+      generationConfig: { maxOutputTokens: 700 },
+    }),
+  });
+  if(!res.ok){
+    const errBody = await res.text().catch(() => '');
+    console.error('Gemini chat request failed:', res.status, errBody);
+    let detail = '';
+    try{ detail = JSON.parse(errBody).error?.message || ''; }catch(e){ /* not JSON */ }
+    throw new Error(`طلب فشل (${res.status})${detail ? ': ' + detail : ''}`);
+  }
+  const data = await res.json();
+  const parts = data.candidates?.[0]?.content?.parts;
+  return parts && parts[0] ? parts[0].text.trim() : 'معلش، مقدرتش أجاوب دلوقتي.';
+}
+
+async function fetchAnthropicReply(history, systemContext){
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': state.aiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5',
+      max_tokens: 700,
+      system: systemContext,
+      messages: sanitizeChatHistory(history),
+    }),
+  });
+  if(!res.ok){
+    const errBody = await res.text().catch(() => '');
+    console.error('AI chat request failed:', res.status, errBody);
+    let detail = '';
+    try{ detail = JSON.parse(errBody).error?.message || ''; }catch(e){ /* not JSON */ }
+    throw new Error(`طلب فشل (${res.status})${detail ? ': ' + detail : ''}`);
+  }
+  const data = await res.json();
+  const block = (data.content || []).find(b => b.type === 'text');
+  return block ? block.text.trim() : 'معلش، مقدرتش أجاوب دلوقتي.';
+}
+
 async function sendAiChatMessage(){
   const input = $('aiChatInput');
   const text = input.value.trim();
   if(!text) return;
-  if(!state.aiKey){
-    $('aiChatStatus').textContent = '⚠️ محتاج تحط مفتاح Anthropic API في الإعدادات الأول.';
+  const usingGemini = state.aiProvider === 'gemini';
+  if(usingGemini && !state.geminiKey){
+    $('aiChatStatus').textContent = '⚠️ محتاج تحط مفتاح Gemini API في الإعدادات الأول (مجاني من Google AI Studio).';
+    return;
+  }
+  if(!usingGemini && !state.aiKey){
+    $('aiChatStatus').textContent = '⚠️ محتاج تحط مفتاح Anthropic API في الإعدادات الأول، أو تختار Gemini المجاني بدالًا منه.';
     return;
   }
 
@@ -4428,31 +4510,10 @@ async function sendAiChatMessage(){
   $('aiChatStatus').textContent = '⏳ نبض بيفكر…';
 
   try{
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': state.aiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-5',
-        max_tokens: 700,
-        system: buildChatSystemContext(),
-        messages: sanitizeChatHistory(history),
-      }),
-    });
-    if(!res.ok){
-      const errBody = await res.text().catch(() => '');
-      console.error('AI chat request failed:', res.status, errBody);
-      let detail = '';
-      try{ detail = JSON.parse(errBody).error?.message || ''; }catch(e){ /* not JSON */ }
-      throw new Error(`طلب فشل (${res.status})${detail ? ': ' + detail : ''}`);
-    }
-    const data = await res.json();
-    const block = (data.content || []).find(b => b.type === 'text');
-    const reply = block ? block.text.trim() : 'معلش، مقدرتش أجاوب دلوقتي.';
+    const systemContext = buildChatSystemContext();
+    const reply = usingGemini
+      ? await fetchGeminiReply(history, systemContext)
+      : await fetchAnthropicReply(history, systemContext);
     history = getAiChatHistory();
     history.push({ role: 'assistant', content: reply });
     saveAiChatHistory(history);
@@ -5365,6 +5426,9 @@ function openSettings(){
   $('apiKeyInput').value = state.apiKey;
   $('apiKeyRow').classList.toggle('hidden', state.goldSource !== 'twelvedata');
   $('aiKeyInput').value = state.aiKey;
+  $('geminiKeyInput').value = state.geminiKey;
+  document.querySelectorAll('input[name="aiProvider"]').forEach(r => { r.checked = r.value === state.aiProvider; });
+  $('geminiKeyRow').classList.toggle('hidden', state.aiProvider !== 'gemini');
   $('backendUrlInput').value = state.backendUrl;
   $('minConfidenceSlider').value = state.minConfidence;
   $('autoSpeakToggle').checked = state.autoSpeak;
@@ -5396,6 +5460,10 @@ function saveSettings(){
   state.goldSource = selected;
   state.apiKey = key;
   state.aiKey = aiKey;
+  state.aiProvider = document.querySelector('input[name="aiProvider"]:checked').value;
+  state.geminiKey = $('geminiKeyInput').value.trim();
+  localStorage.setItem('nabd_aiProvider', state.aiProvider);
+  localStorage.setItem('nabd_geminiKey', state.geminiKey);
   state.backendUrl = $('backendUrlInput').value.trim().replace(/\/$/, '');
   localStorage.setItem('nabd_backendUrl', state.backendUrl);
   state.minConfidence = parseInt($('minConfidenceSlider').value, 10) || 0;
@@ -5859,6 +5927,13 @@ function init(){
       $('apiKeyRow').classList.toggle('hidden', e.target.value !== 'twelvedata');
     });
   });
+
+  document.querySelectorAll('input[name="aiProvider"]').forEach(r => {
+    r.addEventListener('change', e => {
+      $('geminiKeyRow').classList.toggle('hidden', e.target.value !== 'gemini');
+    });
+  });
+  $('geminiKeyRow').classList.toggle('hidden', state.aiProvider !== 'gemini');
 
   $('subscribePushBtn').addEventListener('click', subscribeToPush);
   $('minConfidenceSlider').addEventListener('input', e => {
