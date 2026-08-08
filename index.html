@@ -528,6 +528,10 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 .signal-status-badge.win{ background: rgba(0,229,160,.15); color: var(--bull); border:1px solid var(--bull); }
 .signal-status-badge.loss{ background: rgba(255,77,94,.15); color: var(--bear); border:1px solid var(--bear); }
 .signal-status-badge.expired{ background: var(--surface); color: var(--text-dim); border:1px solid var(--border); }
+.breakeven-badge{
+  font-size:11px; color: var(--gold-glow); background: rgba(240,185,11,.08);
+  border:1px solid var(--gold); border-radius:8px; padding:6px 10px; margin:8px 0;
+}
 .signal-meta{ font-size:10.5px; color: var(--text-dim); margin-bottom:8px; }
 .signal-dismiss{
   position:absolute; top:10px; left:10px; background:none; border:none;
@@ -559,6 +563,17 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 .asset-ticker-change{ font-size:10.5px; margin-top:2px; }
 .asset-ticker-change.up{ color: var(--bull); }
 .asset-ticker-change.down{ color: var(--bear); }
+.macro-regime-box{
+  display:flex; flex-direction:column; gap:3px; padding:10px 12px; border-radius:10px;
+  margin-bottom:10px; font-size:11.5px; line-height:1.6; border:1px solid var(--border);
+}
+.macro-regime-box.hidden{ display:none; }
+.macro-regime-box.v-bull{ background: rgba(0,229,160,.08); border-color: var(--bull); color: var(--text); }
+.macro-regime-box.v-bull strong{ color: var(--bull); }
+.macro-regime-box.v-bear{ background: rgba(255,77,94,.08); border-color: var(--bear); color: var(--text); }
+.macro-regime-box.v-bear strong{ color: var(--bear); }
+.macro-regime-box.v-neutral{ background: rgba(255,255,255,.04); color: var(--text); }
+.macro-regime-box.v-neutral strong{ color: var(--text-dim); }
 
 .ai-chat-content{ display:flex; flex-direction:column; max-height:85vh; }
 .ai-chat-messages{
@@ -884,6 +899,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
     <section class="assets-ticker-card">
       <h2>🌐 أصول أخرى (معلومة سياقية)</h2>
+      <div id="macroRegimeBox" class="macro-regime-box hidden"></div>
       <div id="assetsTickerRow" class="assets-ticker-row">
         <span class="news-loading">جارٍ التحميل…</span>
       </div>
@@ -991,6 +1007,12 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
         <div class="setting-group">
           <label class="setting-label">⚖️ المقارنة</label>
           <div id="comparisonBox" class="perf-stats-box">—</div>
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label">🎯 معايرة الثقة الحقيقية</label>
+          <p class="setting-hint">هل توصية بثقة 70% فعليًا بتكسب حوالي 70% من المرات؟ الجدول ده بيقارن نسبة الثقة المعلنة بالنتيجة الفعلية، لكل نطاق ثقة على حدة.</p>
+          <div id="calibrationBox" class="perf-stats-box">—</div>
         </div>
 
         <ul id="manualTradesList" class="notif-inbox-list"></ul>
@@ -1318,7 +1340,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-23-05'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-07-27-02'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1477,12 +1499,32 @@ function addSignalIfNew(rec){
 
 function signalExitNotifTitle(status){
   return {
-    stop:    '🛑 خروج: تم ضرب وقف الخسارة',
-    tp1:     '🎯 خروج: تحقق الهدف الأول',
-    tp2:     '🎯 خروج: تحقق الهدف الثاني',
-    tp3:     '🎯🎯 خروج: تحقق الهدف الثالث (كامل)',
-    expired: '⌛ انتهت صلاحية التوصية بدون تفعيل',
+    stop:      '🛑 خروج: تم ضرب وقف الخسارة',
+    breakeven: '🔒 خروج: عند نقطة التعادل (وقف متحرك) — بدون خسارة',
+    tp1:       '🎯 خروج: تحقق الهدف الأول',
+    tp2:       '🎯 خروج: تحقق الهدف الثاني',
+    tp3:       '🎯🎯 خروج: تحقق الهدف الثالث (كامل)',
+    expired:   '⌛ انتهت صلاحية التوصية بدون تفعيل',
   }[status] || 'تحديث حالة الصفقة';
+}
+
+// Trailing-stop-to-breakeven threshold: once price has moved this fraction of the way from
+// entry toward TP1, the trade has "proven itself" enough that giving back to the original
+// stop would be a bad trade-off — better to lock in a guaranteed no-loss outcome and let the
+// rest play out. This is a MECHANICAL rule (always applied the same way), unlike the advisory
+// system's judgment calls, so it's predictable and testable in the backtester too.
+const BREAKEVEN_TRIGGER_FRACTION = 0.5;
+
+function checkBreakevenTrigger(s, livePrice){
+  if(s.status !== 'open' || s.stopMovedToBreakeven) return false;
+  const isBuy = s.direction === 'buy';
+  const distToTp1 = Math.abs(s.tp1 - s.entry) || 1;
+  const progress = isBuy ? (livePrice - s.entry) / distToTp1 : (s.entry - livePrice) / distToTp1;
+  if(progress >= BREAKEVEN_TRIGGER_FRACTION){
+    s.stopMovedToBreakeven = true;
+    return true;
+  }
+  return false;
 }
 
 function updateSignalStatuses(livePrice){
@@ -1491,15 +1533,21 @@ function updateSignalStatuses(livePrice){
   state.signals.forEach(s => {
     if(s.status !== 'open') return;
     const prevStatus = s.status;
+    if(checkBreakevenTrigger(s, livePrice)){
+      changed = true;
+      const dirAr = s.direction === 'buy' ? 'شراء' : 'بيع';
+      notify('🔒 تم نقل الوقف لنقطة الدخول', `صفقة ${dirAr} من ${s.entry.toFixed(2)} حققت تقدمًا كافيًا نحو الهدف الأول — تم رفع الوقف تلقائيًا لنقطة الدخول، فأسوأ سيناريو الآن هو الخروج بدون خسارة.`, 'nabd-breakeven-' + s.id);
+    }
+    const effectiveStop = s.stopMovedToBreakeven ? s.entry : s.stop;
     if(now - s.createdAt > SIGNAL_EXPIRY_HOURS * 3600000){
       s.status = 'expired'; s.closedAt = now; changed = true;
     } else if(s.direction === 'buy'){
-      if(livePrice <= s.stop){ s.status = 'stop'; s.closedAt = now; changed = true; }
+      if(livePrice <= effectiveStop){ s.status = s.stopMovedToBreakeven ? 'breakeven' : 'stop'; s.closedAt = now; changed = true; }
       else if(livePrice >= s.tp3){ s.status = 'tp3'; s.closedAt = now; changed = true; }
       else if(livePrice >= s.tp2){ s.status = 'tp2'; s.closedAt = now; changed = true; }
       else if(livePrice >= s.tp1){ s.status = 'tp1'; s.closedAt = now; changed = true; }
     } else {
-      if(livePrice >= s.stop){ s.status = 'stop'; s.closedAt = now; changed = true; }
+      if(livePrice >= effectiveStop){ s.status = s.stopMovedToBreakeven ? 'breakeven' : 'stop'; s.closedAt = now; changed = true; }
       else if(livePrice <= s.tp3){ s.status = 'tp3'; s.closedAt = now; changed = true; }
       else if(livePrice <= s.tp2){ s.status = 'tp2'; s.closedAt = now; changed = true; }
       else if(livePrice <= s.tp1){ s.status = 'tp1'; s.closedAt = now; changed = true; }
@@ -1508,12 +1556,14 @@ function updateSignalStatuses(livePrice){
       const dirAr = s.direction === 'buy' ? 'شراء' : 'بيع';
       notify(signalExitNotifTitle(s.status), `${dirAr} من ${s.entry.toFixed(2)} | السعر الحالي: ${livePrice.toFixed(2)}`, 'nabd-exit-' + s.id, { requireInteraction: s.status === 'stop' });
       // Feed the self-learning weight system — a target hit credits every category that
-      // agreed with this trade's direction at entry; a stop-out counts against them. An
-      // expiry (never triggered either way) is genuinely ambiguous, so it's skipped.
+      // agreed with this trade's direction at entry; a stop-out counts against them. A
+      // breakeven exit (stop moved to entry, then hit) is genuinely neutral — no credit, no
+      // blame. An expiry (never triggered either way) is skipped for the same reason.
       if(s.status === 'stop') recordCategoryOutcomes(s.categories, false);
       else if(s.status === 'tp1' || s.status === 'tp2' || s.status === 'tp3') recordCategoryOutcomes(s.categories, true);
 
-      // Circuit breaker bookkeeping: count consecutive stop-outs, reset on any win.
+      // Circuit breaker bookkeeping: count consecutive stop-outs, reset on any win. A
+      // breakeven exit resets the counter too (it's not a loss) but doesn't count as a "win" streak.
       if(s.status === 'stop'){
         state.consecutiveLosses = (state.consecutiveLosses || 0) + 1;
         localStorage.setItem('nabd_consecutiveLosses', String(state.consecutiveLosses));
@@ -1523,7 +1573,7 @@ function updateSignalStatuses(livePrice){
           localStorage.setItem('nabd_circuitBreakerUntil', String(state.circuitBreakerUntil));
           notify('🚫 قاطع الدائرة: توقف مؤقت للتوصيات', `حصلت ${state.consecutiveLosses} خسائر متتالية — تم إيقاف توصيات الدخول الجديدة لمدة ${state.circuitBreakerCooldownHours} ساعة كإجراء وقائي. تقدر تستأنف يدويًا في أي وقت من الإعدادات.`, 'nabd-breaker-' + Date.now(), { requireInteraction: true });
         }
-      } else if(s.status === 'tp1' || s.status === 'tp2' || s.status === 'tp3'){
+      } else if(s.status === 'tp1' || s.status === 'tp2' || s.status === 'tp3' || s.status === 'breakeven'){
         state.consecutiveLosses = 0;
         localStorage.setItem('nabd_consecutiveLosses', '0');
       }
@@ -1842,6 +1892,30 @@ async function getDXYWithTrend(){
   return { value: fresh.value, trend: getDXYTrend(fresh, next.previous) };
 }
 
+/* ===================== Macro regime (Risk-On / Risk-Off) ===================== */
+// A single "big picture" read combining DXY + silver (+ oil, lightly) — informational only,
+// NEVER fed back into buildRecommendation as its own vote, since DXY and silver already vote
+// individually in there; scoring them a second time here would just double-count the same
+// underlying data under a fancier name. This exists purely to give a quick "what's the macro
+// backdrop doing right now" summary a trader would otherwise have to piece together manually.
+// HONEST LIMITATION: no free source for bond yields client-side (see the backend README for
+// why), so this is a 2-asset (DXY + silver) proxy for the classic risk-on/risk-off framework,
+// not the full textbook version that would also weigh equities and yields.
+function computeMacroRegime(dxy, silver, oil){
+  if(!dxy && !silver) return null;
+  let score = 0, factors = 0;
+  if(dxy && dxy.trend !== 'flat'){ score += dxy.trend === 'down' ? 1 : -1; factors++; }
+  if(silver && silver.trend !== 'flat'){ score += silver.trend === 'up' ? 1 : -1; factors++; }
+  if(oil && oil.trend !== 'flat'){ score += (oil.trend === 'up' ? 1 : -1) * 0.5; factors += 0.5; }
+  if(factors === 0) return { label: 'محايدة', desc: 'كل المؤشرات المكوّنة مستقرة حاليًا — لا توجد بيئة كلية واضحة.', cls: 'v-neutral' };
+
+  if(score >= 1.5) return { label: 'داعمة قوية للذهب (Risk-Off)', desc: 'الدولار ضعيف والفضة صاعدة معًا — نمط كلاسيكي لتدفق الأموال نحو الملاذات الآمنة والمعادن النفيسة.', cls: 'v-bull' };
+  if(score >= 0.5) return { label: 'داعمة معتدلة للذهب', desc: 'أغلب العوامل الكلية تميل لصالح الذهب حاليًا، لكن ليست كلها متفقة بقوة.', cls: 'v-bull' };
+  if(score <= -1.5) return { label: 'ضاغطة بقوة على الذهب (Risk-On)', desc: 'الدولار قوي والفضة هابطة معًا — نمط كلاسيكي لتفضيل المستثمرين للأصول الخطرة على حساب الملاذات الآمنة.', cls: 'v-bear' };
+  if(score <= -0.5) return { label: 'ضاغطة معتدلة على الذهب', desc: 'أغلب العوامل الكلية تميل ضد الذهب حاليًا، لكن ليست كلها متفقة بقوة.', cls: 'v-bear' };
+  return { label: 'مختلطة', desc: 'العوامل الكلية (الدولار والفضة) متعارضة مع بعضها — لا توجد بيئة كلية واحدة واضحة حاليًا.', cls: 'v-neutral' };
+}
+
 /* ===================== Correlated-asset dashboard: Silver & Oil ===================== */
 // HONEST LIMITATION: there is no free, key-less, CORS-friendly live feed for silver or oil
 // (unlike DXY, which we could compute ourselves from open forex rates). Every commodity API
@@ -1887,7 +1961,7 @@ async function getCorrelatedAssetTrend(symbol, cacheKey){
 // breaking the gold analysis, this gives real, always-live context on other markets instead:
 // Bitcoin (always free via Binance) plus silver/oil (only with a TwelveData key, reusing the
 // same correlation fetches already built) — refreshed only on full analysis.
-async function renderAssetsTicker(silver, oil){
+async function renderAssetsTicker(dxy, silver, oil){
   const row = $('assetsTickerRow');
   const boxes = [];
   try{
@@ -1896,6 +1970,16 @@ async function renderAssetsTicker(silver, oil){
   }catch(e){ /* non-critical */ }
   if(silver) boxes.push({ name: '🥈 الفضة (XAG)', price: silver.value.toFixed(2), change: null, trend: silver.trend });
   if(oil) boxes.push({ name: '🛢️ النفط (WTI)', price: oil.value.toFixed(2), change: null, trend: oil.trend });
+
+  const regime = computeMacroRegime(dxy, silver, oil);
+  const regimeBox = $('macroRegimeBox');
+  if(regime){
+    regimeBox.classList.remove('hidden');
+    regimeBox.className = `macro-regime-box ${regime.cls}`;
+    regimeBox.innerHTML = `<strong>🌍 بيئة السوق الكلية: ${regime.label}</strong><span>${regime.desc}</span>`;
+  } else {
+    regimeBox.classList.add('hidden');
+  }
 
   if(!boxes.length){
     row.innerHTML = '<span class="news-loading">مفيش بيانات متاحة حاليًا (الفضة والنفط محتاجين مفتاح TwelveData).</span>';
@@ -3500,12 +3584,13 @@ function renderSRList(sr, price){
 }
 
 const SIGNAL_STATUS_LABEL = {
-  open:    { text: 'نشطة', cls: 'open' },
-  tp1:     { text: '✅ تحقق الهدف ١', cls: 'win' },
-  tp2:     { text: '✅ تحقق الهدف ٢', cls: 'win' },
-  tp3:     { text: '✅ تحقق الهدف ٣', cls: 'win' },
-  stop:    { text: '❌ ضرب وقف الخسارة', cls: 'loss' },
-  expired: { text: '⏱ انتهت صلاحيتها', cls: 'expired' },
+  open:      { text: 'نشطة', cls: 'open' },
+  tp1:       { text: '✅ تحقق الهدف ١', cls: 'win' },
+  tp2:       { text: '✅ تحقق الهدف ٢', cls: 'win' },
+  tp3:       { text: '✅ تحقق الهدف ٣', cls: 'win' },
+  stop:      { text: '❌ ضرب وقف الخسارة', cls: 'loss' },
+  breakeven: { text: '🔒 تعادل (وقف متحرك)', cls: 'expired' },
+  expired:   { text: '⏱ انتهت صلاحيتها', cls: 'expired' },
 };
 
 function timeAgo(ts){
@@ -3535,9 +3620,10 @@ function renderSignalCards(){
         <span class="signal-status-badge ${statusInfo.cls}">${statusInfo.text}</span>
       </div>
       <div class="signal-meta">${timeAgo(s.createdAt)} · نسبة الثقة عند الإصدار: ${s.confidence}%</div>
+      ${s.stopMovedToBreakeven && s.status === 'open' ? '<div class="breakeven-badge">🔒 الوقف منقول تلقائيًا لنقطة الدخول — هذه الصفقة مضمونة بدون خسارة الآن</div>' : ''}
       <div class="trade-level-row">
         <div class="trade-level-box tl-entry"><span class="tl-label">الدخول</span><span class="tl-value">${formatPrice(s.entry)}</span></div>
-        <div class="trade-level-box tl-stop"><span class="tl-label">الوقف</span><span class="tl-value">${formatPrice(s.stop)}</span></div>
+        <div class="trade-level-box tl-stop"><span class="tl-label">الوقف${s.stopMovedToBreakeven ? ' 🔒' : ''}</span><span class="tl-value">${formatPrice(s.stopMovedToBreakeven ? s.entry : s.stop)}</span></div>
       </div>
       <div class="trade-level-row">
         <div class="trade-level-box tl-tp1"><span class="tl-label">هدف ١</span><span class="tl-value">${formatPrice(s.tp1)}</span></div>
@@ -4264,8 +4350,13 @@ function computeRobotStats(){
   const closed = state.signals.filter(s => s.status !== 'open' && s.status !== 'expired');
   const wins = closed.filter(s => s.status === 'tp1' || s.status === 'tp2' || s.status === 'tp3');
   const losses = closed.filter(s => s.status === 'stop');
-  const winRate = closed.length ? Math.round((wins.length / closed.length) * 100) : null;
-  return { total: closed.length, wins: wins.length, losses: losses.length, winRate };
+  const breakevens = closed.filter(s => s.status === 'breakeven');
+  // Win rate is computed over decisive outcomes only — a breakeven exit is neither a win nor
+  // a loss (the trailing-stop mechanism worked exactly as intended: zero net damage), so
+  // counting it against the win rate would understate how the strategy is actually performing.
+  const decisive = wins.length + losses.length;
+  const winRate = decisive ? Math.round((wins.length / decisive) * 100) : null;
+  return { total: closed.length, wins: wins.length, losses: losses.length, breakevens: breakevens.length, winRate };
 }
 
 function computeManualStats(){
@@ -4273,6 +4364,27 @@ function computeManualStats(){
   const wins = trades.filter(t => t.result === 'win').length;
   const winRate = trades.length ? Math.round((wins / trades.length) * 100) : null;
   return { total: trades.length, wins, losses: trades.length - wins, winRate };
+}
+
+// Confidence calibration: does a "70% confidence" signal actually win ~70% of the time?
+// This is the honest check on whether the confidence NUMBER itself deserves to be trusted,
+// separate from whether the strategy overall is profitable. Buckets by 10-point confidence
+// ranges; needs at least 5 decisive (win/loss) outcomes in a bucket to say anything — a
+// single lucky/unlucky trade in a sparse bucket shouldn't look like a verdict.
+const CONFIDENCE_BUCKETS = [
+  { min: 50, max: 59, label: '50–59%' }, { min: 60, max: 69, label: '60–69%' },
+  { min: 70, max: 79, label: '70–79%' }, { min: 80, max: 89, label: '80–89%' },
+  { min: 90, max: 100, label: '90–100%' },
+];
+function computeCalibrationStats(){
+  const decisive = state.signals.filter(s => (s.status === 'tp1' || s.status === 'tp2' || s.status === 'tp3' || s.status === 'stop') && s.confidence != null);
+  return CONFIDENCE_BUCKETS.map(b => {
+    const inBucket = decisive.filter(s => s.confidence >= b.min && s.confidence <= b.max);
+    const wins = inBucket.filter(s => s.status !== 'stop').length;
+    const actualWinRate = inBucket.length ? Math.round((wins / inBucket.length) * 100) : null;
+    const statedMidpoint = Math.round((b.min + b.max) / 2);
+    return { ...b, sampleSize: inBucket.length, actualWinRate, statedMidpoint, reliable: inBucket.length >= 5 };
+  }).filter(b => b.sampleSize > 0);
 }
 
 function renderPerformancePanel(){
@@ -4283,7 +4395,8 @@ function renderPerformancePanel(){
     <div class="perf-row"><span>إجمالي التوصيات المُقفلة</span><strong>${robot.total}</strong></div>
     <div class="perf-row"><span>أرباح (أهداف)</span><strong>${robot.wins}</strong></div>
     <div class="perf-row"><span>خسائر (وقف)</span><strong>${robot.losses}</strong></div>
-    <div class="perf-row"><span>نسبة النجاح</span><strong>${robot.winRate}%</strong></div>
+    <div class="perf-row"><span>تعادل (وقف متحرك)</span><strong>${robot.breakevens}</strong></div>
+    <div class="perf-row"><span>نسبة النجاح</span><strong>${robot.winRate != null ? robot.winRate + '%' : '—'}</strong></div>
   ` : '<div class="perf-row"><span>لا توجد توصيات مُقفلة بعد.</span></div>';
 
   const list = $('manualTradesList');
@@ -4311,6 +4424,17 @@ function renderPerformancePanel(){
       <div class="perf-row"><span>نسبة نجاح صفقاتك اليدوية</span><strong>${manual.winRate != null ? manual.winRate + '%' : '—'}</strong></div>
       ${diff != null ? `<div class="perf-row"><span>الفرق</span><strong style="color:${diff >= 0 ? 'var(--bull)' : 'var(--bear)'}">${diff >= 0 ? '+' : ''}${diff}%</strong></div>` : ''}
     `;
+  }
+
+  const calibration = computeCalibrationStats();
+  if(!calibration.length){
+    $('calibrationBox').innerHTML = '<div class="perf-row"><span>محتاجين توصيات مُقفلة أكتر عشان نقدر نقول حاجة.</span></div>';
+  } else {
+    $('calibrationBox').innerHTML = calibration.map(b => {
+      const gap = b.actualWinRate != null ? b.actualWinRate - b.statedMidpoint : null;
+      const gapColor = gap == null ? 'var(--text-dim)' : Math.abs(gap) <= 10 ? 'var(--bull)' : 'var(--bear)';
+      return `<div class="perf-row"><span>${b.label} (عينة ${b.sampleSize}${b.reliable ? '' : ' — قليلة'})</span><strong style="color:${gapColor}">فعليًا ${b.actualWinRate}%${gap != null ? ` (${gap >= 0 ? '+' : ''}${gap})` : ''}</strong></div>`;
+    }).join('');
   }
 }
 
@@ -5315,7 +5439,7 @@ async function loadAsset(asset, fullAnalysis = true){
       try{ silver = await getCorrelatedAssetTrend('XAG/USD', 'nabd_silverCache'); }catch(e){ silver = null; }
       try{ oil = await getCorrelatedAssetTrend('WTI/USD', 'nabd_oilCache'); }catch(e){ oil = null; }
       state.frozenSilver = silver; state.frozenOil = oil;
-      renderAssetsTicker(silver, oil).catch(() => {});
+      renderAssetsTicker(dxy, silver, oil).catch(() => {});
     } else {
       silver = state.frozenSilver || null; oil = state.frozenOil || null;
     }
@@ -5606,7 +5730,42 @@ function runBacktest(candles, lookaheadBars = 48){
     else curStreak = 0;
   });
 
-  return { totalTrades: trades.length, decided: decided.length, wins, losses, openCount, winRate, avgR, maxLossStreak, lookaheadBars };
+  // Profit Factor: total R won ÷ total R lost. >1 means the system's wins outweigh its
+  // losses in R-terms, not just in raw win count — a 40% win-rate system can still be
+  // profitable if its average winner is big enough relative to its average loser.
+  const grossWinR = decided.filter(t => t.rMultiple > 0).reduce((a, t) => a + t.rMultiple, 0);
+  const grossLossR = Math.abs(decided.filter(t => t.rMultiple < 0).reduce((a, t) => a + t.rMultiple, 0));
+  const profitFactor = grossLossR > 0 ? grossWinR / grossLossR : (grossWinR > 0 ? Infinity : 0);
+
+  // Max drawdown: the worst peak-to-trough decline in the cumulative R equity curve — this is
+  // what actually determines whether a real account survives a losing streak, which "average
+  // R" alone hides completely (a system can have great average R and still blow up an account
+  // if its drawdowns are deep enough).
+  let equity = 0, peak = 0, maxDrawdownR = 0;
+  decided.forEach(t => {
+    equity += t.rMultiple;
+    peak = Math.max(peak, equity);
+    maxDrawdownR = Math.max(maxDrawdownR, peak - equity);
+  });
+
+  return { totalTrades: trades.length, decided: decided.length, wins, losses, openCount, winRate, avgR, maxLossStreak, profitFactor, maxDrawdownR, lookaheadBars };
+}
+
+// Walk-forward validation: splits the fetched history into an older "in-sample" half and a
+// more recent "out-of-sample" half, and backtests each independently. If performance on the
+// out-of-sample half is drastically worse, that's an honest signal the system (or the market
+// regime) isn't holding up out of the period it was implicitly tuned/observed on — a single
+// backtest over the whole period can't tell you that, it just averages the two together.
+function runWalkForwardBacktest(candles, lookaheadBars = 48){
+  const mid = Math.floor(candles.length / 2);
+  // each half needs its own lead-in history for indicators to warm up, so the out-of-sample
+  // half reuses the tail of the in-sample data as context rather than starting cold
+  const inSample = candles.slice(0, mid);
+  const outSample = candles.slice(Math.max(0, mid - 220));
+  return {
+    inSample: runBacktest(inSample, lookaheadBars),
+    outSample: runBacktest(outSample, lookaheadBars),
+  };
 }
 
 async function runBacktestUI(){
@@ -5625,19 +5784,32 @@ async function runBacktestUI(){
     } else {
       candles = await fetchBinanceKlines(SYMBOLS.goldPaxg, '1h', 1000);
     }
-    const result = runBacktest(candles);
+    const wf = runWalkForwardBacktest(candles);
     const days = Math.round((candles[candles.length - 1].time - candles[0].time) / 86400000);
-    const rrColor = result.avgR >= 0 ? 'var(--bull)' : 'var(--bear)';
+
+    const renderSegment = (title, result) => {
+      const rrColor = result.avgR >= 0 ? 'var(--bull)' : 'var(--bear)';
+      const pfText = result.profitFactor === Infinity ? '∞' : result.profitFactor.toFixed(2);
+      const pfColor = result.profitFactor >= 1.5 ? 'var(--bull)' : result.profitFactor >= 1 ? 'var(--gold-glow)' : 'var(--bear)';
+      return `
+        <div class="perf-row" style="margin-top:6px;"><strong style="color:var(--gold-glow);">${title}</strong></div>
+        <div class="risk-line"><span>صفقات محسومة</span><strong>${result.decided}</strong></div>
+        <div class="risk-line"><span>نسبة النجاح</span><strong style="color:${result.winRate>=50?'var(--bull)':'var(--bear)'}">${result.winRate.toFixed(1)}%</strong></div>
+        <div class="risk-line"><span>متوسط R</span><strong style="color:${rrColor}">${result.avgR>=0?'+':''}${result.avgR.toFixed(2)}R</strong></div>
+        <div class="risk-line"><span>معامل الربح (Profit Factor)</span><strong style="color:${pfColor}">${pfText}</strong></div>
+        <div class="risk-line"><span>أقصى تراجع (Max Drawdown)</span><strong style="color:var(--bear)">${result.maxDrawdownR.toFixed(2)}R</strong></div>
+        <div class="risk-line"><span>أطول سلسلة خسائر</span><strong style="color:var(--bear)">${result.maxLossStreak}</strong></div>`;
+    };
+
+    const degrading = wf.inSample.decided >= 10 && wf.outSample.decided >= 10 && (wf.inSample.winRate - wf.outSample.winRate) > 15;
+
     out.innerHTML = `
-      <div class="risk-line"><span>الفترة المُختبرة</span><strong>~${days} يومًا (${candles.length} شمعة ساعة)</strong></div>
-      <div class="risk-line"><span>إجمالي الإشارات المؤهلة</span><strong>${result.totalTrades}</strong></div>
-      <div class="risk-line"><span>صفقات محسومة (فائزة/خاسرة)</span><strong>${result.decided}</strong></div>
-      <div class="risk-line"><span>نسبة النجاح الفعلية</span><strong style="color:${result.winRate>=50?'var(--bull)':'var(--bear)'}">${result.winRate.toFixed(1)}%</strong></div>
-      <div class="risk-line"><span>متوسط العائد بالنسبة للمخاطرة (R)</span><strong style="color:${rrColor}">${result.avgR>=0?'+':''}${result.avgR.toFixed(2)}R</strong></div>
-      <div class="risk-line"><span>أطول سلسلة خسائر متتالية</span><strong style="color:var(--bear)">${result.maxLossStreak}</strong></div>
-      <div class="risk-line"><span>صفقات لم تُحسم بعد خلال نافذة الاختبار</span><strong>${result.openCount}</strong></div>
+      <div class="risk-line"><span>الفترة الكلية المُختبرة</span><strong>~${days} يومًا (${candles.length} شمعة ساعة)</strong></div>
+      ${renderSegment('📊 النصف الأقدم (In-Sample)', wf.inSample)}
+      ${renderSegment('📊 النصف الأحدث (Out-of-Sample)', wf.outSample)}
+      ${degrading ? `<p style="margin:10px 0 0;font-size:11px;color:var(--bear);line-height:1.6;">⚠️ نسبة النجاح في النصف الأحدث أضعف بوضوح من الأقدم — ده مؤشر إن أداء النظام ممكن يكون بيتغيّر مع تغيّر ظروف السوق، مش بالضرورة عيب دائم، لكن يستاهل انتباه.</p>` : ''}
       <p style="margin:10px 0 0;font-size:10.5px;color:var(--text-dim);line-height:1.6;">
-        * اختبار "سير-للأمام" (walk-forward) بنفس منطق التوصية الحي بدون رؤية مسبقة للبيانات، لكنه لا يشمل فلتر الفريم الأعلى (4H) ولا التقويم الاقتصادي — الإشارات الحية أكثر تحفظًا من هذا الرقم. عدد صفقات قليل = دلالة إحصائية ضعيفة، اعتبره فحص منطقية النظام وليس ضمانًا لأي نتيجة مستقبلية.
+        * اختبار Walk-Forward حقيقي: النصفين اتحسبوا بشكل مستقل تمامًا بنفس منطق التوصية الحي، بدون رؤية مسبقة للبيانات في أي منهم، ولا يشمل فلتر الفريم الأعلى (4H) ولا التقويم الاقتصادي — الإشارات الحية أكثر تحفظًا من هذا الرقم. عدد صفقات قليل = دلالة إحصائية ضعيفة.
       </p>`;
   }catch(e){
     out.innerHTML = `<p style="color:var(--bear);font-size:12.5px;">تعذر تشغيل الاختبار: ${escapeHtml(e.message)}</p>`;
