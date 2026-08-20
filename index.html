@@ -1340,7 +1340,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-07-27-02'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-08-17-02'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1365,6 +1365,9 @@ const state = {
   frozenStructure: { gold: null },
   frozenOB: { gold: null },
   frozenFVG: { gold: null },
+  frozenLiquidity: { gold: null },
+  frozenInducement: { gold: null },
+  frozenPremiumDiscount: { gold: null },
   frozenHtfTrend: { gold: null },
   frozenDxy: null,
   frozenTrend5m: null,
@@ -2737,10 +2740,46 @@ function detectOrderBlocks(candles, lookback = 60){
       blocks.push({ type: 'bear', top: prev.high, bottom: prev.low, idx: i - 1 });
     }
   }
+  // Mitigation check: has price already returned INTO this zone since it formed? A fresh,
+  // never-revisited OB is a materially stronger candidate than one price has already tested
+  // once (and possibly partly consumed the institutional orders that made it work) — most
+  // simple OB implementations skip this and treat every OB as equally valid regardless of age.
+  //
+  // Breaker Block check: has price gone FURTHER than a simple retest — actually CLOSED beyond
+  // the far side of the zone, invalidating it as a bull/bear OB entirely? When that happens,
+  // the zone doesn't just disappear — SMC theory treats it as "flipping polarity": a broken
+  // bullish OB (buyers failed to defend it) becomes a bearish breaker block (now acts as
+  // resistance), and vice versa for a broken bearish OB. This is meaningfully different
+  // evidence than mitigation — it's not "tested and held", it's "tested and failed".
+  const markStatus = (block) => {
+    const afterBlock = slice.slice(block.idx + 2); // candles strictly after the impulse move away
+    const wasRevisited = afterBlock.some(c => c.low <= block.top && c.high >= block.bottom);
+    const brokenCandle = block.type === 'bull'
+      ? afterBlock.find(c => c.close < block.bottom)
+      : afterBlock.find(c => c.close > block.top);
+    return { ...block, mitigated: wasRevisited, broken: Boolean(brokenCandle) };
+  };
   // keep the most recent bullish and bearish OB only (most relevant to current price)
   const lastBull = [...blocks].reverse().find(b => b.type === 'bull');
   const lastBear = [...blocks].reverse().find(b => b.type === 'bear');
-  return { bull: lastBull || null, bear: lastBear || null };
+  const bullStatus = lastBull ? markStatus(lastBull) : null;
+  const bearStatus = lastBear ? markStatus(lastBear) : null;
+
+  // Also scan ALL blocks (not just the most recent) for the closest BROKEN one price is now
+  // retesting from the flipped side — a fresh OB and a breaker block can coexist at different
+  // price levels, so this deliberately doesn't just reuse lastBull/lastBear above.
+  const findNearestBreaker = (flipToType) => {
+    const candidates = blocks.filter(b => b.type === (flipToType === 'bull' ? 'bear' : 'bull'));
+    for(const b of [...candidates].reverse()){
+      const status = markStatus(b);
+      if(status.broken) return { ...status, flippedTo: flipToType };
+    }
+    return null;
+  };
+  const breakerBull = findNearestBreaker('bull'); // a broken BEARISH ob now acting as bullish support
+  const breakerBear = findNearestBreaker('bear'); // a broken BULLISH ob now acting as bearish resistance
+
+  return { bull: bullStatus, bear: bearStatus, breakerBull, breakerBear };
 }
 
 function detectFVG(candles, lookback = 60){
@@ -2774,10 +2813,112 @@ function detectLiquidityZones(candles, lookback = 80, tolerancePct = 0.0015){
   };
   const highGroups = cluster(pivots.filter(p => p.type === 'high'));
   const lowGroups = cluster(pivots.filter(p => p.type === 'low'));
-  return {
-    buySideLiquidity: highGroups[0] ? { price: highGroups[0].avg, touches: highGroups[0].items.length } : null,
-    sellSideLiquidity: lowGroups[0] ? { price: lowGroups[0].avg, touches: lowGroups[0].items.length } : null,
+  const buySideLiquidity = highGroups[0] ? { price: highGroups[0].avg, touches: highGroups[0].items.length } : null;
+  const sellSideLiquidity = lowGroups[0] ? { price: lowGroups[0].avg, touches: lowGroups[0].items.length } : null;
+
+  // ---------- Liquidity Sweep ("stop hunt") detection ----------
+  // A sweep is a distinct EVENT, not just a static zone: price wicks THROUGH a resting
+  // liquidity pool (where stop orders cluster above equal highs / below equal lows) and then
+  // closes back on the other side within the same or very next candle — the classic sign that
+  // large players triggered retail stops before reversing. This is a materially stronger,
+  // higher-conviction signal than "there's a liquidity zone nearby", and one most basic SMC
+  // implementations skip entirely because it requires checking the REACTION, not just the level.
+  let sweep = null;
+  const recent = slice.slice(-3);
+  if(buySideLiquidity){
+    for(const c of recent){
+      if(c.high > buySideLiquidity.price && c.close < buySideLiquidity.price){
+        const wickSize = c.high - Math.max(c.open, c.close);
+        const bodySize = Math.abs(c.close - c.open) || 0.0001;
+        if(wickSize > bodySize * 0.5){ // a meaningful rejection wick, not just a marginal poke
+          sweep = { type: 'bearish', level: buySideLiquidity.price, desc: `اصطياد سيولة شرائية (Liquidity Sweep) فوق ${formatPrice(buySideLiquidity.price)} — كسر وهمي بفتيل مرفوض وإغلاق تحته، إشارة انعكاسية هبوطية قوية نموذجية.` };
+        }
+      }
+    }
+  }
+  if(!sweep && sellSideLiquidity){
+    for(const c of recent){
+      if(c.low < sellSideLiquidity.price && c.close > sellSideLiquidity.price){
+        const wickSize = Math.min(c.open, c.close) - c.low;
+        const bodySize = Math.abs(c.close - c.open) || 0.0001;
+        if(wickSize > bodySize * 0.5){
+          sweep = { type: 'bullish', level: sellSideLiquidity.price, desc: `اصطياد سيولة بيعية (Liquidity Sweep) تحت ${formatPrice(sellSideLiquidity.price)} — كسر وهمي بفتيل مرفوض وإغلاق فوقه، إشارة انعكاسية صعودية قوية نموذجية.` };
+        }
+      }
+    }
+  }
+
+  return { buySideLiquidity, sellSideLiquidity, sweep };
+}
+
+// ---------- Premium / Discount array + OTE (Optimal Trade Entry) ----------
+// Classic ICT concept, distinct from generic Fibonacci retracement: take the most recent
+// significant swing (high-to-low or low-to-high leg), split it exactly in half — the upper
+// 50% is "premium" (favor selling from here), the lower 50% is "discount" (favor buying from
+// here) — then flag the tighter 62-79% zone of a retracement as the OTE, the zone ICT traders
+// specifically look to enter FROM, not just "somewhere in discount".
+function computePremiumDiscountZone(candles, price, lookback = 60){
+  const slice = candles.slice(-lookback);
+  const pivots = findSwingPivots(slice, 3);
+  if(pivots.length < 2) return null;
+  const highs = pivots.filter(p => p.type === 'high');
+  const lows = pivots.filter(p => p.type === 'low');
+  if(!highs.length || !lows.length) return null;
+  const swingHigh = Math.max(...highs.map(p => p.price));
+  const swingLow = Math.min(...lows.map(p => p.price));
+  const range = swingHigh - swingLow;
+  if(range <= 0) return null;
+
+  const positionPct = (price - swingLow) / range; // 0 = at the low, 1 = at the high
+  const zone = positionPct >= 0.5 ? 'premium' : 'discount';
+  // OTE band, measured from the low (0.5) toward the high (1.0) side and mirrored below —
+  // i.e. the 62-79% retracement band relative to EITHER edge of the range.
+  const inOteFromTop = positionPct >= 0.21 && positionPct <= 0.38; // 62-79% retracement of a down-leg from the high
+  const inOteFromBottom = positionPct >= 0.62 && positionPct <= 0.79; // 62-79% retracement of an up-leg from the low
+  return { swingHigh, swingLow, positionPct, zone, inOte: inOteFromTop || inOteFromBottom, oteSide: inOteFromBottom ? 'bull' : (inOteFromTop ? 'bear' : null) };
+}
+
+// ---------- Inducement (IDM) ----------
+// A subtler, less commonly implemented SMC concept: before price makes its "real" move toward
+// a major point of interest (a major liquidity pool, an Order Block), it often first sweeps a
+// smaller, closer, more obvious minor swing point — engineered to trigger early retail entries
+// (an "inducement") right before reversing toward the real target. Distinguishing this from the
+// main liquidity sweep matters: an IDM sweep that has ALREADY happened is actually a
+// CONFIRMING signal that the real move toward the major zone is now more likely to follow,
+// not a standalone reversal signal on its own the way a major sweep is.
+function detectInducement(candles, minorLookback = 20, majorLookback = 80){
+  const minorSlice = candles.slice(-minorLookback);
+  const majorSlice = candles.slice(-majorLookback);
+  const minorPivots = findSwingPivots(minorSlice, 2);   // tighter window = smaller, more "obvious" swing points
+  const majorPivots = findSwingPivots(majorSlice, 4);   // wider window = the real, structurally significant points
+  if(!minorPivots.length || !majorPivots.length) return null;
+
+  const price = candles[candles.length - 1].close;
+  const recent = candles.slice(-3);
+
+  const checkSide = (type) => {
+    const minor = minorPivots.filter(p => p.type === type);
+    const major = majorPivots.filter(p => p.type === type);
+    if(!minor.length || !major.length) return null;
+    // the minor point must sit BETWEEN current price and the major point (i.e. it's the
+    // "closer, shallower" level a premature move would hit first)
+    const minorPoint = type === 'high' ? Math.min(...minor.map(p => p.price)) : Math.max(...minor.map(p => p.price));
+    const majorPoint = type === 'high' ? Math.max(...major.map(p => p.price)) : Math.min(...major.map(p => p.price));
+    const isBetween = type === 'high' ? (minorPoint < majorPoint && minorPoint > price) : (minorPoint > majorPoint && minorPoint < price);
+    if(!isBetween) return null;
+    // was the minor point swept in the last few candles (wick through + close back)?
+    const swept = recent.some(c => type === 'high'
+      ? (c.high > minorPoint && c.close < minorPoint)
+      : (c.low < minorPoint && c.close > minorPoint));
+    if(!swept) return null;
+    return { minorPoint, majorPoint, side: type };
   };
+
+  const highIdm = checkSide('high'); // IDM above price → cleared → strengthens the case for continuing DOWN toward major low
+  const lowIdm = checkSide('low');   // IDM below price → cleared → strengthens the case for continuing UP toward major high
+  if(lowIdm) return { direction: 'bull', desc: `تم اصطياد إنداكمنت (IDM) عند ${formatPrice(lowIdm.minorPoint)} قبل الوصول لمنطقة السيولة الرئيسية عند ${formatPrice(lowIdm.majorPoint)} — نمط فخ كلاسيكي يرجّح استمرار الحركة الصاعدة الحقيقية.` };
+  if(highIdm) return { direction: 'bear', desc: `تم اصطياد إنداكمنت (IDM) عند ${formatPrice(highIdm.minorPoint)} قبل الوصول لمنطقة السيولة الرئيسية عند ${formatPrice(highIdm.majorPoint)} — نمط فخ كلاسيكي يرجّح استمرار الحركة الهابطة الحقيقية.` };
+  return null;
 }
 
 /* ===================== SVG icons (candle + chart patterns) ===================== */
@@ -2820,9 +2961,9 @@ function chartPatternIcon(name, bias){
 
 /* ===================== Recommendation engine ===================== */
 
-const TOTAL_POSSIBLE_SIGNALS = 17; // rsi, macd, fib, sr-support, sr-resistance, candle, chartPattern, ema, vwap, structure(BOS/CHOCH), OB/FVG, divergence, regime-bonus, dxy, volume(OBV), sentiment(AI), silver (oil is informational-only, not a vote)
+const TOTAL_POSSIBLE_SIGNALS = 21; // rsi, macd, fib, sr-support, sr-resistance, candle, chartPattern, ema, vwap, structure(BOS/CHOCH), OB/FVG, divergence, regime-bonus, dxy, volume(OBV), sentiment(AI), silver, liquidity_sweep, premium_discount/OTE, breaker_block, inducement (oil is informational-only, not a vote)
 
-function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, atrSpike, seasonal, newsHistory, price, upcomingEvent, categoryWeights = {}, atTime = Date.now() }){
+function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, liquidity, premiumDiscount, inducement, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, atrSpike, seasonal, newsHistory, price, upcomingEvent, categoryWeights = {}, atTime = Date.now() }){
   let score = 0;
   const votes = [];
   const reasons = [];
@@ -2899,18 +3040,70 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
     reasons.push({ bias: 'neutral', text: `هيكل السوق (SMC): لا يوجد كسر هيكل (BOS/CHOCH) واضح حاليًا — الاتجاه العام ${structure.trend === 'up' ? 'صاعد' : structure.trend === 'down' ? 'هابط' : 'محايد'}.`, category: 'structure' });
   }
 
-  // Order Blocks + Fair Value Gaps (price currently reacting inside a zone)
+  // Order Blocks + Fair Value Gaps (price currently reacting inside a zone). A MITIGATED
+  // (already-revisited) order block is materially weaker evidence — the institutional orders
+  // that made the zone work may already be partly filled — so only a FRESH, unmitigated OB
+  // gets a full vote; a mitigated one is still surfaced as context but doesn't sway the score.
   const inZone = (zone) => zone && price <= zone.top * 1.0015 && price >= zone.bottom * 0.9985;
   let smcZoneVoted = false;
   if(orderBlocks){
-    if(inZone(orderBlocks.bull)){ vote(1, 'smc_zone', 'bull', `Order Block شرائي نشط بين ${formatPrice(orderBlocks.bull.bottom)} و${formatPrice(orderBlocks.bull.top)} — منطقة اهتمام مؤسسي للشراء.`); smcZoneVoted = true; }
-    if(inZone(orderBlocks.bear)){ vote(-1, 'smc_zone', 'bear', `Order Block بيعي نشط بين ${formatPrice(orderBlocks.bear.bottom)} و${formatPrice(orderBlocks.bear.top)} — منطقة اهتمام مؤسسي للبيع.`); smcZoneVoted = true; }
+    if(inZone(orderBlocks.bull)){
+      if(!orderBlocks.bull.mitigated){ vote(1, 'smc_zone', 'bull', `Order Block شرائي طازج (غير مستنفد) بين ${formatPrice(orderBlocks.bull.bottom)} و${formatPrice(orderBlocks.bull.top)} — منطقة اهتمام مؤسسي قوية للشراء.`); smcZoneVoted = true; }
+      else reasons.push({ bias: 'neutral', text: `Order Block شرائي مستنفد (تم اختباره من قبل) بين ${formatPrice(orderBlocks.bull.bottom)} و${formatPrice(orderBlocks.bull.top)} — إشارة أضعف، لا يُحتسب كصوت كامل.`, category: 'smc_zone' });
+    }
+    if(inZone(orderBlocks.bear)){
+      if(!orderBlocks.bear.mitigated){ vote(-1, 'smc_zone', 'bear', `Order Block بيعي طازج (غير مستنفد) بين ${formatPrice(orderBlocks.bear.bottom)} و${formatPrice(orderBlocks.bear.top)} — منطقة اهتمام مؤسسي قوية للبيع.`); smcZoneVoted = true; }
+      else reasons.push({ bias: 'neutral', text: `Order Block بيعي مستنفد (تم اختباره من قبل) بين ${formatPrice(orderBlocks.bear.bottom)} و${formatPrice(orderBlocks.bear.top)} — إشارة أضعف، لا يُحتسب كصوت كامل.`, category: 'smc_zone' });
+    }
   }
   if(!smcZoneVoted && fvg){
     if(inZone(fvg.bull)){ vote(1, 'smc_zone', 'bull', `فجوة سيولة عادلة (FVG) صاعدة غير مغلقة بين ${formatPrice(fvg.bull.bottom)} و${formatPrice(fvg.bull.top)}.`); smcZoneVoted = true; }
     else if(inZone(fvg.bear)){ vote(-1, 'smc_zone', 'bear', `فجوة سيولة عادلة (FVG) هابطة غير مغلقة بين ${formatPrice(fvg.bear.bottom)} و${formatPrice(fvg.bear.top)}.`); smcZoneVoted = true; }
   }
-  if(!smcZoneVoted) reasons.push({ bias: 'neutral', text: 'Order Block/FVG: السعر ليس داخل أي منطقة اهتمام مؤسسي نشطة حاليًا.', category: 'smc_zone' });
+  if(!smcZoneVoted) reasons.push({ bias: 'neutral', text: 'Order Block/FVG: السعر ليس داخل أي منطقة اهتمام مؤسسي طازجة حاليًا.', category: 'smc_zone' });
+
+  // Liquidity Sweep ("stop hunt") — one of the highest-conviction SMC signals: price wicks
+  // through a resting pool of stop orders (equal highs/lows) then rejects and closes back
+  // inside, which is the textbook sign of a manipulation move right before a real reversal.
+  // Weighted as its own category since it's meaningfully different evidence than "a liquidity
+  // zone merely exists nearby" (which liquidity zones without a sweep don't vote on at all).
+  if(liquidity && liquidity.sweep){
+    if(liquidity.sweep.type === 'bullish') vote(1, 'liquidity_sweep', 'bull', liquidity.sweep.desc);
+    else vote(-1, 'liquidity_sweep', 'bear', liquidity.sweep.desc);
+  } else if(liquidity && (liquidity.buySideLiquidity || liquidity.sellSideLiquidity)){
+    const parts = [];
+    if(liquidity.buySideLiquidity) parts.push(`سيولة شراء عند ${formatPrice(liquidity.buySideLiquidity.price)} (${liquidity.buySideLiquidity.touches} قمم متقاربة)`);
+    if(liquidity.sellSideLiquidity) parts.push(`سيولة بيع عند ${formatPrice(liquidity.sellSideLiquidity.price)} (${liquidity.sellSideLiquidity.touches} قيعان متقاربة)`);
+    reasons.push({ bias: 'neutral', text: `مناطق سيولة رابضة: ${parts.join(' | ')} — لم يحدث اصطياد بعد.`, category: 'liquidity_sweep' });
+  }
+
+  // Premium/Discount array + OTE (Optimal Trade Entry) — classic ICT precision-entry concept:
+  // only the 62-79% retracement zone of the current swing counts as a "prime" entry area,
+  // rather than treating the whole discount/premium half as equally good.
+  if(premiumDiscount && premiumDiscount.inOte){
+    if(premiumDiscount.oteSide === 'bull') vote(1, 'premium_discount', 'bull', `السعر داخل منطقة الدخول المثلى (OTE 62-79%) من منطقة الخصم (Discount) للموجة الحالية — منطقة دخول شرائية دقيقة حسب ICT.`);
+    else vote(-1, 'premium_discount', 'bear', `السعر داخل منطقة الدخول المثلى (OTE 62-79%) من منطقة العلاوة (Premium) للموجة الحالية — منطقة دخول بيعية دقيقة حسب ICT.`);
+  } else if(premiumDiscount){
+    reasons.push({ bias: 'neutral', text: `السعر حاليًا في منطقة ${premiumDiscount.zone === 'discount' ? 'خصم (Discount)' : 'علاوة (Premium)'} بنسبة ${(premiumDiscount.positionPct*100).toFixed(0)}% من نطاق الموجة، وليس داخل نطاق الدخول المثلى (OTE) بعد.`, category: 'premium_discount' });
+  }
+
+  // Breaker Blocks — an Order Block that FAILED (price closed clean through it, not just
+  // wicked in) flips polarity: a broken bullish OB becomes bearish resistance, a broken
+  // bearish OB becomes bullish support. Only counted when price is CURRENTLY retesting that
+  // flipped zone right now — a broken OB sitting far from price isn't actionable yet.
+  const inZoneBreaker = (b) => b && price <= b.top * 1.0015 && price >= b.bottom * 0.9985;
+  if(orderBlocks && inZoneBreaker(orderBlocks.breakerBull)){
+    vote(1, 'breaker_block', 'bull', `Breaker Block صاعد بين ${formatPrice(orderBlocks.breakerBull.bottom)} و${formatPrice(orderBlocks.breakerBull.top)} — منطقة كانت Order Block بيعي وانكسرت، وانقلبت الآن لدعم.`);
+  } else if(orderBlocks && inZoneBreaker(orderBlocks.breakerBear)){
+    vote(-1, 'breaker_block', 'bear', `Breaker Block هابط بين ${formatPrice(orderBlocks.breakerBear.bottom)} و${formatPrice(orderBlocks.breakerBear.top)} — منطقة كانت Order Block شرائي وانكسرت، وانقلبت الآن لمقاومة.`);
+  }
+
+  // Inducement (IDM) — a confirming signal, not a standalone reversal call: a minor liquidity
+  // trap already swept right before the real move toward a bigger point of interest.
+  if(inducement){
+    if(inducement.direction === 'bull') vote(1, 'inducement', 'bull', inducement.desc);
+    else vote(-1, 'inducement', 'bear', inducement.desc);
+  }
 
   // Regular divergence (price vs RSI) — one of the more reliable classic reversal signals
   if(divergence){
@@ -3398,7 +3591,7 @@ function renderExecutiveSummary(rec, { trend5m, trend1h, trend4h, trend1d, sr, s
 
   // One row per indicator category, in a fixed, readable order — reusing the exact bias
   // already computed for that category in rec.reasons (single source of truth, no re-deriving).
-  const order = ['rsi','macd','fib','sr','candle','chartPattern','ema','vwap','structure','smc_zone','divergence','regime','dxy','volume','sentiment','silver','oil','volatility','seasonal','newsHistory'];
+  const order = ['rsi','macd','fib','sr','candle','chartPattern','ema','vwap','structure','smc_zone','liquidity_sweep','premium_discount','breaker_block','inducement','divergence','regime','dxy','volume','sentiment','silver','oil','volatility','seasonal','newsHistory'];
   order.forEach(cat => {
     const reason = rec.reasons.find(r => r.category === cat);
     if(!reason) return;
@@ -3503,6 +3696,8 @@ const CATEGORY_LABELS_AR = {
   smc_zone: 'Order Block/FVG', divergence: 'انحراف', regime: 'نظام السوق', dxy: 'مؤشر الدولار',
   volume: 'الحجم (OBV)', sentiment: 'تحليل الأخبار (AI)', silver: 'الفضة (XAG)', oil: 'النفط (WTI)',
   volatility: 'حالة التقلب (ATR)', seasonal: 'التحليل الموسمي', newsHistory: 'رد الفعل التاريخي للخبر',
+  liquidity_sweep: 'اصطياد السيولة (SMC)', premium_discount: 'علاوة/خصم (OTE)',
+  breaker_block: 'Breaker Block', inducement: 'الإنداكمنت (IDM)',
 };
 
 // Renders the "why this confidence %?" transparency panel: one bar per indicator category
@@ -3870,7 +4065,10 @@ function renderAll({ asset, livePrice, changePercent, sourceLabel, candles, rsi,
   }
   const liqEl = $('smcLiquidity');
   const liquidity = detectLiquidityZones(candles);
-  if(liquidity.buySideLiquidity || liquidity.sellSideLiquidity){
+  if(liquidity.sweep){
+    liqEl.className = 'smc-zone-box ' + (liquidity.sweep.type === 'bullish' ? 'bull' : 'bear');
+    liqEl.innerHTML = `<strong>🎯 اصطياد سيولة!</strong><br>${liquidity.sweep.type === 'bullish' ? 'صاعد' : 'هابط'} عند ${formatPrice(liquidity.sweep.level)}`;
+  } else if(liquidity.buySideLiquidity || liquidity.sellSideLiquidity){
     const parts = [];
     if(liquidity.buySideLiquidity) parts.push(`سيولة شراء (قمم متساوية) ${formatPrice(liquidity.buySideLiquidity.price)}`);
     if(liquidity.sellSideLiquidity) parts.push(`سيولة بيع (قيعان متساوية) ${formatPrice(liquidity.sellSideLiquidity.price)}`);
@@ -5333,12 +5531,15 @@ async function loadAsset(asset, fullAnalysis = true){
     const divergence = detectDivergence(candles, 60, iset.rsiPeriod);
     const regime = detectMarketRegime(closes);
 
-    let chartPattern, structure, orderBlocks, fvg, htfTrend;
+    let chartPattern, structure, orderBlocks, fvg, liquidity, premiumDiscount, inducement, htfTrend;
     if(fullAnalysis){
       chartPattern = detectChartPattern(candles);
       structure = detectMarketStructure(candles);
       orderBlocks = detectOrderBlocks(candles);
       fvg = detectFVG(candles);
+      liquidity = detectLiquidityZones(candles);
+      premiumDiscount = computePremiumDiscountZone(candles, livePrice);
+      inducement = detectInducement(candles);
       // The 4h trend rarely flips within a few minutes, so on TwelveData we only actually
       // spend a credit re-fetching it once every 20 minutes (or immediately if we've never
       // fetched it yet) — any full-analysis in between reuses the frozen value.
@@ -5357,6 +5558,9 @@ async function loadAsset(asset, fullAnalysis = true){
       structure = state.frozenStructure.gold;
       orderBlocks = state.frozenOB.gold;
       fvg = state.frozenFVG.gold;
+      liquidity = state.frozenLiquidity.gold;
+      premiumDiscount = state.frozenPremiumDiscount.gold;
+      inducement = state.frozenInducement.gold;
       htfTrend = state.frozenHtfTrend.gold;
     }
 
@@ -5455,7 +5659,7 @@ async function loadAsset(asset, fullAnalysis = true){
     }
 
     const categoryWeights = getCategoryWeightMap();
-    const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, atrSpike, seasonal, newsHistory, price: livePrice, upcomingEvent, categoryWeights });
+    const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, liquidity, premiumDiscount, inducement, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, atrSpike, seasonal, newsHistory, price: livePrice, upcomingEvent, categoryWeights });
     renderExecutiveSummary(rec, { trend5m, trend1h, trend4h: htfTrend, trend1d, sr, structure, price: livePrice, fullAnalysis });
 
     // Hard safety gate: never present an actionable trade recommendation while the
@@ -5490,6 +5694,9 @@ async function loadAsset(asset, fullAnalysis = true){
       state.frozenStructure.gold = structure;
       state.frozenOB.gold = orderBlocks;
       state.frozenFVG.gold = fvg;
+      state.frozenLiquidity.gold = liquidity;
+      state.frozenInducement.gold = inducement;
+      state.frozenPremiumDiscount.gold = premiumDiscount;
       state.frozenHtfTrend.gold = htfTrend;
       state.lastRec = rec;
       state.lastLivePrice = livePrice;
