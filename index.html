@@ -273,6 +273,13 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 .verdict-title{ font-weight:800; font-size:15px; flex:1; }
 .verdict-close{ background:none; border:none; color: var(--text-dim); font-size:16px; cursor:pointer; }
 .verdict-reasons{ list-style:none; margin:10px 0 0; padding:0; display:flex; flex-direction:column; gap:6px; }
+.verdict-levels{ display:grid; grid-template-columns: repeat(2, 1fr); gap:8px; margin-top:10px; }
+.verdict-levels.hidden{ display:none; }
+.verdict-level-box{
+  background: rgba(255,255,255,.05); border-radius:10px; padding:8px 10px; text-align:center;
+}
+.verdict-level-box span{ display:block; font-size:10px; color: var(--text-dim); margin-bottom:3px; }
+.verdict-level-box strong{ font-family: var(--font-mono); font-size:14px; }
 .verdict-reasons li{ font-size:12.5px; color: var(--text); line-height:1.5; padding-right:14px; position:relative; }
 .verdict-reasons li::before{ content:"•"; position:absolute; right:0; color: var(--gold-glow); }
 
@@ -927,6 +934,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
         <span id="verdictTitle" class="verdict-title">—</span>
         <button id="verdictClose" class="verdict-close" type="button">✕</button>
       </div>
+      <div id="verdictLevels" class="verdict-levels hidden"></div>
       <ul id="verdictReasons" class="verdict-reasons"></ul>
     </div>
 
@@ -1013,6 +1021,12 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
           <label class="setting-label">🎯 معايرة الثقة الحقيقية</label>
           <p class="setting-hint">هل توصية بثقة 70% فعليًا بتكسب حوالي 70% من المرات؟ الجدول ده بيقارن نسبة الثقة المعلنة بالنتيجة الفعلية، لكل نطاق ثقة على حدة.</p>
           <div id="calibrationBox" class="perf-stats-box">—</div>
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label">🔍 مراجعات الاستراتيجية التلقائية</label>
+          <p class="setting-hint">كل مرة قاطع الدائرة يتفعّل بعد خسائر متتالية، النظام بيحلل الصفقات دي ويحط أي عامل متكرر فيها تحت المراقبة (وزن مخفّض) لـ72 ساعة.</p>
+          <div id="strategyReviewsBox" class="perf-stats-box">لا توجد مراجعات بعد.</div>
         </div>
 
         <ul id="manualTradesList" class="notif-inbox-list"></ul>
@@ -1340,7 +1354,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-08-17-02'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-08-17-04'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1434,14 +1448,21 @@ function saveCategoryStats(stats){
 }
 function getCategoryWeightMap(){
   const stats = getCategoryStats();
+  const probation = getCategoryProbation();
+  const now = Date.now();
   const map = {};
   for(const [category, s] of Object.entries(stats)){
     const total = s.wins + s.losses;
     const winRate = total ? s.wins / total : 0.5;
     // maps win rate 0%→weight 0.6, 50%→1.0, 100%→1.4 (capped) — enough to matter without
     // letting one category ever fully silence or dominate the vote.
-    const weight = Math.max(0.6, Math.min(1.4, 0.6 + winRate * 0.8));
-    map[category] = { weight, sampleSize: total };
+    let weight = Math.max(0.6, Math.min(1.4, 0.6 + winRate * 0.8));
+    // Strategy-review probation: an EXTRA penalty stacked on top, for categories that were
+    // flagged as common across a recent losing streak (see runStrategyReview) — separate from
+    // and more aggressive than the slow, sample-size-gated normal calibration above.
+    const onProbation = probation[category] && now < probation[category].until;
+    if(onProbation) weight *= PROBATION_PENALTY;
+    map[category] = { weight, sampleSize: total, onProbation };
   }
   return map;
 }
@@ -1453,6 +1474,70 @@ function recordCategoryOutcomes(categories, isWin){
     if(isWin) stats[cat].wins++; else stats[cat].losses++;
   });
   saveCategoryStats(stats);
+}
+
+/* ===================== Strategy review (triggered by a losing streak) ===================== */
+// The circuit breaker above just PAUSES trading — this goes a step further and actually
+// changes behavior: when a losing streak trips the breaker, we look back at exactly those
+// losing trades, find which indicator categories were common across them (i.e. which parts of
+// the "reasoning" kept showing up right before losses), and put those specific categories on a
+// temporary PROBATION — an extra weight penalty on top of the normal gradual self-learning
+// system — until they either age out or prove themselves again on new closed trades. This is
+// what makes it a genuine strategy REVIEW, not just a time-out.
+const PROBATION_DURATION_HOURS = 72;
+const PROBATION_PENALTY = 0.5; // extra multiplier stacked on top of the normal category weight
+
+function getCategoryProbation(){
+  try{ return JSON.parse(localStorage.getItem('nabd_categoryProbation') || '{}'); }
+  catch(e){ return {}; }
+}
+function saveCategoryProbation(map){
+  localStorage.setItem('nabd_categoryProbation', JSON.stringify(map));
+}
+
+function getStrategyReviews(){
+  try{ return JSON.parse(localStorage.getItem('nabd_strategyReviews') || '[]'); }
+  catch(e){ return []; }
+}
+function saveStrategyReviews(list){
+  localStorage.setItem('nabd_strategyReviews', JSON.stringify(list.slice(-20)));
+}
+
+function runStrategyReview(losingStreakSignals){
+  if(!losingStreakSignals || losingStreakSignals.length < 2) return null;
+
+  // Tally how often each category shows up across the losing streak specifically.
+  const tally = {};
+  losingStreakSignals.forEach(s => {
+    (s.categories || []).forEach(cat => { tally[cat] = (tally[cat] || 0) + 1; });
+  });
+  const threshold = Math.ceil(losingStreakSignals.length / 2); // present in at least half the losses
+  const flagged = Object.entries(tally).filter(([, count]) => count >= threshold).map(([cat]) => cat);
+
+  if(flagged.length){
+    const probation = getCategoryProbation();
+    const until = Date.now() + PROBATION_DURATION_HOURS * 3600000;
+    flagged.forEach(cat => { probation[cat] = { until, flaggedAt: Date.now() }; });
+    saveCategoryProbation(probation);
+  }
+
+  const review = {
+    id: 'review_' + Date.now(),
+    timestamp: Date.now(),
+    streakSize: losingStreakSignals.length,
+    losingTrades: losingStreakSignals.map(s => ({ direction: s.direction, entry: s.entry, confidence: s.confidence, categories: s.categories || [] })),
+    flaggedCategories: flagged,
+  };
+  const reviews = getStrategyReviews();
+  reviews.push(review);
+  saveStrategyReviews(reviews);
+
+  const flaggedText = flagged.length
+    ? `تم رصد تكرار هذه العوامل في أغلب صفقات السلسلة الخاسرة: ${flagged.map(c => CATEGORY_LABELS_AR[c] || c).join('، ')} — تم تخفيض وزنها مؤقتًا لـ${PROBATION_DURATION_HOURS} ساعة لحد ما تثبت نفسها تاني.`
+    : `مفيش عامل واحد متكرر بوضوح في الصفقات الخاسرة دي — يبدو إنها خسائر متنوعة الأسباب، ممكن تكون طبيعة السوق الحالية مش مناسبة للاستراتيجية مؤقتًا أكتر من كونها مشكلة في عامل بعينه.`;
+  notify('🔍 مراجعة استراتيجية تلقائية', flaggedText, 'nabd-review-' + review.id, { requireInteraction: true });
+
+  return review;
 }
 
 function addSignalIfNew(rec){
@@ -1575,6 +1660,14 @@ function updateSignalStatuses(livePrice){
           state.circuitBreakerUntil = Date.now() + cooldownMs;
           localStorage.setItem('nabd_circuitBreakerUntil', String(state.circuitBreakerUntil));
           notify('🚫 قاطع الدائرة: توقف مؤقت للتوصيات', `حصلت ${state.consecutiveLosses} خسائر متتالية — تم إيقاف توصيات الدخول الجديدة لمدة ${state.circuitBreakerCooldownHours} ساعة كإجراء وقائي. تقدر تستأنف يدويًا في أي وقت من الإعدادات.`, 'nabd-breaker-' + Date.now(), { requireInteraction: true });
+
+          // Trigger the deeper strategy review: pull the actual losing-streak signals (the
+          // most recent `consecutiveLosses` closed-stop signals) and analyze them.
+          const recentStops = state.signals
+            .filter(sig => sig.status === 'stop')
+            .sort((a, b) => b.closedAt - a.closedAt)
+            .slice(0, state.consecutiveLosses);
+          runStrategyReview(recentStops);
         }
       } else if(s.status === 'tp1' || s.status === 'tp2' || s.status === 'tp3' || s.status === 'breakeven'){
         state.consecutiveLosses = 0;
@@ -3227,7 +3320,15 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
   // what's actually worked, instead of treating every indicator category as equally reliable
   // forever. Falls back to weight 1 (fully neutral) for any category without enough history.
   const direction = score > 0 ? 1 : score < 0 ? -1 : 0;
-  const weightOf = (category) => (categoryWeights[category] && categoryWeights[category].sampleSize >= 5) ? categoryWeights[category].weight : 1;
+  const weightOf = (category) => {
+    const w = categoryWeights[category];
+    if(!w) return 1;
+    // Probation always applies immediately (it's a deliberate flag from a detected losing
+    // pattern, not the slow gradual calibration) — the normal win-rate weight still needs the
+    // usual sample-size gate to avoid reacting to noise.
+    if(w.onProbation) return w.weight;
+    return w.sampleSize >= 5 ? w.weight : 1;
+  };
   const directionalVotes = votes.filter(v => v !== 0);
   const weightedAgree = catVotes.filter(v => v.dir === direction).reduce((s, v) => s + weightOf(v.category), 0);
   const weightedTotal = catVotes.reduce((s, v) => s + weightOf(v.category), 0);
@@ -3240,6 +3341,7 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
   const breakdown = catVotes.map(v => ({
     category: v.category, dir: v.dir, weight: weightOf(v.category),
     learned: Boolean(categoryWeights[v.category] && categoryWeights[v.category].sampleSize >= 5),
+    onProbation: Boolean(categoryWeights[v.category] && categoryWeights[v.category].onProbation),
   }));
 
   let eventWarning = null;
@@ -3719,9 +3821,9 @@ function renderConfidenceBreakdown(rec){
       <span class="cbd-bar-track">
         <span class="cbd-bar-fill ${b.dir > 0 ? 'bull' : 'bear'}" style="width:${Math.round((b.weight / maxWeight) * 100)}%"></span>
       </span>
-      <span class="cbd-weight ${b.learned ? 'learned' : ''}">${b.dir > 0 ? '🟢' : '🔴'} ×${b.weight.toFixed(2)}${b.learned ? ' 🧠' : ''}</span>
+      <span class="cbd-weight ${b.learned ? 'learned' : ''}">${b.dir > 0 ? '🟢' : '🔴'} ×${b.weight.toFixed(2)}${b.onProbation ? ' ⚠️' : (b.learned ? ' 🧠' : '')}</span>
     </div>
-  `).join('') + `<p class="setting-hint" style="margin-top:8px;">🧠 = وزن متعلَّم من أداء حقيقي سابق لهذا التصنيف (بعد 5 صفقات مغلقة على الأقل). الوزن الافتراضي هو 1.00×.</p>`;
+  `).join('') + `<p class="setting-hint" style="margin-top:8px;">🧠 = وزن متعلَّم من أداء حقيقي سابق (5 صفقات على الأقل). ⚠️ = تحت المراقبة مؤقتًا بعد مراجعة استراتيجية (وزنه مخفّض حتى يثبت نفسه تاني). الوزن الافتراضي 1.00×.</p>`;
 }
 
 function renderReasons(reasons){
@@ -3877,36 +3979,42 @@ function renderFinalSummary(rec, livePrice){
     return;
   }
 
-  const openSignals = state.signals.filter(s => s.status === 'open');
-
-  if(openSignals.length === 1){
-    const s = openSignals[0];
-    const isBuy = s.direction === 'buy';
+  // IMPORTANT: this card must always agree with the traffic light / "🎯 هل أدخل الآن؟" verdict —
+  // both now read from THE SAME rec.levels (the live analysis result), instead of this card
+  // separately checking state.signals (the tracked/persisted signal list). Those two used to be
+  // able to disagree — e.g. rec.levels qualifying as a live "buy" while no tracked signal card
+  // existed yet (blocked by the user's own minConfidence filter, a dedupe check, or simply not
+  // registered on this exact render pass) — which showed "wait" here and "enter now" elsewhere
+  // at the same time. Reading rec.levels directly here removes that possible contradiction.
+  if(rec.levels){
+    const { direction, entry, stop, tp1, tp2, tp3 } = rec.levels;
+    const isBuy = direction === 'buy';
     card.className = 'final-summary-card ' + (isBuy ? 'fs-buy' : 'fs-sell');
     icon.textContent = isBuy ? '🟢' : '🔴';
-    headline.textContent = `${isBuy ? 'اشترِ' : 'بِع'} من نقطة ${formatPrice(s.entry)} (ثابتة)`;
+    headline.textContent = `${isBuy ? 'اشترِ' : 'بِع'} من نقطة ${formatPrice(entry)} — ${rec.trafficLight.text} (ثقة ${rec.confidence}%)`;
     details.innerHTML = `
-      <div class="fs-row"><span>وقف الخسارة</span><strong style="color:var(--bear)">${formatPrice(s.stop)}</strong></div>
-      <div class="fs-row"><span>الهدف الأول</span><strong style="color:var(--bull)">${formatPrice(s.tp1)}</strong></div>
-      <div class="fs-row"><span>الهدف الثاني</span><strong style="color:var(--bull)">${formatPrice(s.tp2)}</strong></div>
-      <div class="fs-row"><span>نسبة الثقة عند الإصدار</span><strong>${s.confidence}%</strong></div>
+      <div class="fs-row"><span>وقف الخسارة</span><strong style="color:var(--bear)">${formatPrice(stop)}</strong></div>
+      <div class="fs-row"><span>الهدف الأول</span><strong style="color:var(--bull)">${formatPrice(tp1)}</strong></div>
+      <div class="fs-row"><span>الهدف الثاني</span><strong style="color:var(--bull)">${formatPrice(tp2)}</strong></div>
+      <div class="fs-row"><span>الهدف الثالث</span><strong style="color:var(--bull)">${formatPrice(tp3)}</strong></div>
       <div class="fs-row"><span>السعر الحالي</span><strong>${formatPrice(livePrice)}</strong></div>`;
     return;
   }
 
-  if(openSignals.length > 1){
+  const openSignals = state.signals.filter(s => s.status === 'open');
+  if(openSignals.length){
     const buys = openSignals.filter(s => s.direction === 'buy').length;
     const sells = openSignals.filter(s => s.direction === 'sell').length;
     card.className = 'final-summary-card fs-buy';
     icon.textContent = '📌';
-    headline.textContent = `لديك ${openSignals.length} توصيات ثابتة نشطة (${buys} شراء، ${sells} بيع)`;
+    headline.textContent = `لا توصية جديدة الآن، لكن لديك ${openSignals.length} توصيات متتبعة سابقًا لا تزال مفتوحة (${buys} شراء، ${sells} بيع)`;
     details.innerHTML = `<div class="fs-row"><span>التفاصيل</span><strong>راجع البطاقات تحت في "التوصيات الثابتة"</strong></div>`;
     return;
   }
 
   card.className = 'final-summary-card fs-wait';
   icon.textContent = '🟡';
-  headline.textContent = 'انتظار — لا توجد توصية ثابتة نشطة الآن';
+  headline.textContent = 'انتظار — الفرصة غير مكتملة بعد';
   const closestBias = rec.score > 0 ? 'شراء' : rec.score < 0 ? 'بيع' : 'محايد';
   details.innerHTML = `<div class="fs-row"><span>السعر الحالي</span><strong>${formatPrice(livePrice)}</strong></div>
     <div class="fs-row"><span>الميل الحالي الأقرب</span><strong>${closestBias}</strong></div>
@@ -4633,6 +4741,22 @@ function renderPerformancePanel(){
       const gapColor = gap == null ? 'var(--text-dim)' : Math.abs(gap) <= 10 ? 'var(--bull)' : 'var(--bear)';
       return `<div class="perf-row"><span>${b.label} (عينة ${b.sampleSize}${b.reliable ? '' : ' — قليلة'})</span><strong style="color:${gapColor}">فعليًا ${b.actualWinRate}%${gap != null ? ` (${gap >= 0 ? '+' : ''}${gap})` : ''}</strong></div>`;
     }).join('');
+  }
+
+  const reviews = getStrategyReviews().slice().reverse();
+  const probation = getCategoryProbation();
+  const activeProbation = Object.entries(probation).filter(([, p]) => Date.now() < p.until);
+  const box = $('strategyReviewsBox');
+  if(!reviews.length){
+    box.innerHTML = 'لا توجد مراجعات بعد — دي علامة كويسة (يعني مفيش سلسلة خسائر مقلقة لحد دلوقتي).';
+  } else {
+    const probationHtml = activeProbation.length
+      ? `<div class="perf-row" style="margin-bottom:8px;"><span>⚠️ تحت المراقبة الآن</span><strong style="color:var(--bear)">${activeProbation.map(([cat]) => CATEGORY_LABELS_AR[cat] || cat).join('، ')}</strong></div>`
+      : '';
+    const historyHtml = reviews.slice(0, 5).map(r => `
+      <div class="perf-row"><span>${timeAgo(r.timestamp)} (${r.streakSize} خسائر متتالية)</span><strong>${r.flaggedCategories.length ? r.flaggedCategories.map(c => CATEGORY_LABELS_AR[c] || c).join('، ') : 'لا يوجد عامل متكرر واضح'}</strong></div>
+    `).join('');
+    box.innerHTML = probationHtml + historyHtml;
   }
 }
 
@@ -6219,6 +6343,21 @@ function showVerdict(rec){
   banner.classList.add(cls);
   $('verdictIcon').textContent = icon;
   $('verdictTitle').textContent = title;
+
+  const levelsBox = $('verdictLevels');
+  if(rec.levels){
+    const { entry, stop, tp1, tp2 } = rec.levels;
+    levelsBox.classList.remove('hidden');
+    levelsBox.innerHTML = `
+      <div class="verdict-level-box"><span>الدخول</span><strong>${formatPrice(entry)}</strong></div>
+      <div class="verdict-level-box"><span>الوقف</span><strong style="color:var(--bear)">${formatPrice(stop)}</strong></div>
+      <div class="verdict-level-box"><span>هدف ١</span><strong style="color:var(--bull)">${formatPrice(tp1)}</strong></div>
+      <div class="verdict-level-box"><span>هدف ٢</span><strong style="color:var(--bull)">${formatPrice(tp2)}</strong></div>`;
+  } else {
+    levelsBox.classList.add('hidden');
+    levelsBox.innerHTML = '';
+  }
+
   const ul = $('verdictReasons');
   ul.innerHTML = '';
   rec.reasons.slice(0, 4).forEach(r => {
