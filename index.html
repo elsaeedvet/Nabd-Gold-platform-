@@ -744,6 +744,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
   width:100%; max-width:560px; background: var(--surface);
   border:1px solid var(--border); border-bottom:none;
   border-radius: 22px 22px 0 0; padding: 22px 20px calc(20px + env(safe-area-inset-bottom));
+  max-height:88vh; overflow-y:auto; -webkit-overflow-scrolling:touch;
 }
 .modal-content h2{ font-size:17px; margin-bottom:16px; }
 .modal-header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
@@ -1354,7 +1355,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-08-17-04'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-08-17-05'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
