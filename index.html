@@ -582,10 +582,10 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 .macro-regime-box.v-neutral{ background: rgba(255,255,255,.04); color: var(--text); }
 .macro-regime-box.v-neutral strong{ color: var(--text-dim); }
 
-.ai-chat-content{ display:flex; flex-direction:column; max-height:85vh; }
+.ai-chat-content{ display:flex; flex-direction:column; }
 .ai-chat-messages{
-  flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px;
-  padding:10px 2px; min-height:200px; max-height:50vh;
+  display:flex; flex-direction:column; gap:10px;
+  padding:10px 2px; min-height:120px;
 }
 .ai-chat-msg{
   max-width:88%; padding:10px 13px; border-radius:14px; font-size:12.5px; line-height:1.7;
@@ -1355,7 +1355,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-08-17-06'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-08-17-07'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -4855,7 +4855,11 @@ function renderAiChatMessages(){
   const history = getAiChatHistory();
   box.innerHTML = history.map(m => `<div class="ai-chat-msg ${m.role === 'user' ? 'user' : 'assistant'}">${escapeHtml(m.content)}</div>`).join('')
     || '<div class="ai-chat-msg assistant">أهلاً! اسأل براحتك عن التحليل الحالي أو أي حاجة تانية.</div>';
-  box.scrollTop = box.scrollHeight;
+  // scroll the single unified modal container (not this inner box, which no longer scrolls
+  // on its own — see the CSS fix for why: two nested independently-scrolling boxes fight over
+  // touch gestures on mobile, so there's now only ONE scroll container for the whole chat).
+  const modalContent = box.closest('.modal-content');
+  if(modalContent) modalContent.scrollTop = modalContent.scrollHeight;
 }
 
 // Anthropic's API rejects any request where messages don't strictly alternate
