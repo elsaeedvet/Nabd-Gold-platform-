@@ -1355,7 +1355,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-08-17-07'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-08-17-08'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -2386,6 +2386,78 @@ function priorTrend(candles, startIdx, lookback = 6){
   return 'neutral';
 }
 
+/* ===================== Price Action engine (classical bar-by-bar reading) ===================== */
+// A dedicated, systematic Price Action layer — distinct from the candlestick PATTERN library
+// above (named shapes like "hammer"/"engulfing") and from the SMC structure layer. This reads
+// bars the way classical price-action traders (Al Brooks school) do: bar quality (how
+// convincingly it closed, not just its color), immediate follow-through, and pullback
+// character within the recent trend. This is treated as a CONFIRMATION GATE on the final
+// recommendation (see applyPriceActionGate below) rather than just one more equal vote —
+// exactly per the request that it should carry real weight before a signal is ever published,
+// not get diluted among 20+ other factors.
+function computeCloseLocationValue(c){
+  const range = c.high - c.low;
+  if(range <= 0) return 0.5;
+  return (c.close - c.low) / range; // 1.0 = closed at the very high, 0.0 = closed at the very low
+}
+
+function classifyBar(c, avgRange){
+  const body = bodySize(c);
+  const clv = computeCloseLocationValue(c);
+  const isTrendBar = body > avgRange * 0.6 && (clv > 0.7 || clv < 0.3);
+  if(isTrendBar) return clv > 0.7 ? 'trend_bull' : 'trend_bear';
+  if(body < avgRange * 0.25) return 'doji';
+  return 'small';
+}
+
+function computePriceAction(candles, lookback = 30){
+  const slice = candles.slice(-lookback);
+  if(slice.length < 10) return null;
+  const avgRange = slice.reduce((a, c) => a + candleRange(c), 0) / slice.length;
+  const last = slice[slice.length - 1];
+  const prev = slice[slice.length - 2];
+  const lastType = classifyBar(last, avgRange);
+  const prevType = classifyBar(prev, avgRange);
+  const clv = computeCloseLocationValue(last);
+
+  // Follow-through: does the bar right before the last one AGREE with the last one's
+  // direction? Two consecutive convincing trend bars in the same direction is classically a
+  // much stronger continuation signal than one strong bar that's immediately contradicted.
+  const followThrough = (lastType === 'trend_bull' && (prevType === 'trend_bull' || prevType === 'small'))
+    || (lastType === 'trend_bear' && (prevType === 'trend_bear' || prevType === 'small'));
+
+  // Pullback quality: within the recent leg, how deep/overlapping have the last few bars'
+  // ranges been relative to the prior trend-bar's range? Shallow, orderly pullbacks (each bar
+  // only partially overlapping the last trend bar) are classical evidence of a healthy trend;
+  // deep pullbacks that fully engulf the prior bar suggest the trend is losing control.
+  const recentTrendBar = [...slice].reverse().find(c => classifyBar(c, avgRange).startsWith('trend'));
+  let pullbackQuality = null;
+  if(recentTrendBar && recentTrendBar !== last){
+    const overlap = Math.min(last.high, recentTrendBar.high) - Math.max(last.low, recentTrendBar.low);
+    const overlapPct = Math.max(0, overlap) / (candleRange(recentTrendBar) || 1);
+    pullbackQuality = overlapPct < 0.5 ? 'shallow' : 'deep';
+  }
+
+  // Bar counting: consecutive higher-highs-and-higher-lows (or lower/lower) over the last few
+  // bars — a simple, classical PA measure of trend conviction distinct from the SMC swing
+  // structure elsewhere in this file (that one uses pivot points over a much longer window).
+  let consecutiveUp = 0, consecutiveDown = 0;
+  for(let i = slice.length - 1; i > 0; i--){
+    if(slice[i].high > slice[i-1].high && slice[i].low > slice[i-1].low) { consecutiveUp++; if(consecutiveDown) break; }
+    else if(slice[i].high < slice[i-1].high && slice[i].low < slice[i-1].low) { consecutiveDown++; if(consecutiveUp) break; }
+    else break;
+  }
+
+  let bias = 'neutral';
+  let strength = 0; // 0-3
+  if(lastType === 'trend_bull'){ bias = 'bull'; strength++; if(followThrough) strength++; if(pullbackQuality === 'shallow') strength++; }
+  else if(lastType === 'trend_bear'){ bias = 'bear'; strength++; if(followThrough) strength++; if(pullbackQuality === 'shallow') strength++; }
+  if(consecutiveUp >= 3) { bias = 'bull'; strength = Math.max(strength, 2); }
+  if(consecutiveDown >= 3) { bias = 'bear'; strength = Math.max(strength, 2); }
+
+  return { lastType, clv, followThrough, pullbackQuality, consecutiveUp, consecutiveDown, bias, strength };
+}
+
 // Expanded candlestick library: this covers ~24 of the most widely-documented classical
 // patterns (Bulkowski / standard Japanese candlestick literature — public-domain concepts,
 // not copied from any specific indicator). Checked from most specific (3-candle) down to
@@ -3055,9 +3127,9 @@ function chartPatternIcon(name, bias){
 
 /* ===================== Recommendation engine ===================== */
 
-const TOTAL_POSSIBLE_SIGNALS = 21; // rsi, macd, fib, sr-support, sr-resistance, candle, chartPattern, ema, vwap, structure(BOS/CHOCH), OB/FVG, divergence, regime-bonus, dxy, volume(OBV), sentiment(AI), silver, liquidity_sweep, premium_discount/OTE, breaker_block, inducement (oil is informational-only, not a vote)
+const TOTAL_POSSIBLE_SIGNALS = 22; // rsi, macd, fib, sr-support, sr-resistance, candle, chartPattern, ema, vwap, structure(BOS/CHOCH), OB/FVG, divergence, regime-bonus, dxy, volume(OBV), sentiment(AI), silver, liquidity_sweep, premium_discount/OTE, breaker_block, inducement, price_action (oil is informational-only, not a vote)
 
-function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, liquidity, premiumDiscount, inducement, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, atrSpike, seasonal, newsHistory, price, upcomingEvent, categoryWeights = {}, atTime = Date.now() }){
+function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, liquidity, premiumDiscount, inducement, priceAction, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, atrSpike, seasonal, newsHistory, price, upcomingEvent, categoryWeights = {}, atTime = Date.now() }){
   let score = 0;
   const votes = [];
   const reasons = [];
@@ -3104,6 +3176,21 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
   if(candle && candle.bias === 'bull') vote(1, 'candle', 'bull', `شمعة "${candle.name}" على فريم الساعة — إشارة صعودية قصيرة المدى.`);
   else if(candle && candle.bias === 'bear') vote(-1, 'candle', 'bear', `شمعة "${candle.name}" على فريم الساعة — إشارة هبوطية قصيرة المدى.`);
   else if(candle) reasons.push({ bias: 'neutral', text: `نمط الشمعة الحالي: "${candle.name}" — بدون انحياز اتجاهي واضح.`, category: 'candle' });
+
+  // Price Action (bar-by-bar quality reading) — distinct from the named candle pattern above.
+  // Only votes when strength is meaningful (2+ of: convincing close, follow-through, shallow
+  // pullback / bar-counting) — a weak/ambiguous bar contributes nothing rather than noise.
+  if(priceAction && priceAction.bias !== 'neutral' && priceAction.strength >= 2){
+    const clvPct = Math.round(priceAction.clv * 100);
+    const ftText = priceAction.followThrough ? 'مع استمرارية تأكيدية من الشمعة السابقة' : '';
+    const pbText = priceAction.pullbackQuality === 'shallow' ? 'وارتداد ضحل ومنظم يدعم استمرار الاتجاه' : '';
+    const barCountText = priceAction.consecutiveUp >= 3 ? `و${priceAction.consecutiveUp} شمعات متتالية بقمم وقيعان أعلى` : (priceAction.consecutiveDown >= 3 ? `و${priceAction.consecutiveDown} شمعات متتالية بقمم وقيعان أدنى` : '');
+    const extras = [ftText, pbText, barCountText].filter(Boolean).join('، ');
+    if(priceAction.bias === 'bull') vote(1, 'price_action', 'bull', `برايس أكشن: شمعة اتجاهية صاعدة قوية (إغلاق عند ${clvPct}% من مداها)${extras ? ' ' + extras : ''}.`);
+    else vote(-1, 'price_action', 'bear', `برايس أكشن: شمعة اتجاهية هابطة قوية (إغلاق عند ${clvPct}% من مداها)${extras ? ' ' + extras : ''}.`);
+  } else if(priceAction){
+    reasons.push({ bias: 'neutral', text: `برايس أكشن: الشمعة الحالية غير حاسمة (${priceAction.lastType === 'doji' ? 'دوجي/تردد' : 'صغيرة'}) — لا تعطي تأكيدًا واضحًا لأي اتجاه.`, category: 'price_action' });
+  }
 
   if(chartPattern && chartPattern.bias === 'bull') vote(1, 'chartPattern', 'bull', `نمط فني: "${chartPattern.name}" — ${chartPattern.desc}`);
   else if(chartPattern && chartPattern.bias === 'bear') vote(-1, 'chartPattern', 'bear', `نمط فني: "${chartPattern.name}" — ${chartPattern.desc}`);
@@ -3345,6 +3432,26 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
     onProbation: Boolean(categoryWeights[v.category] && categoryWeights[v.category].onProbation),
   }));
 
+  // -------- Logical coherence check --------
+  // A weighted average can look confident even when the underlying LOGIC is contradictory —
+  // e.g. trend-following evidence (EMA stack, structure, MACD) all pointing one way while
+  // mean-reversion evidence (RSI extreme, Bollinger) points the other. Both readings can be
+  // individually "correct" yet describe fundamentally different market theories at once. This
+  // doesn't re-score anything; it surfaces the tension honestly and trims confidence a bit
+  // when the two schools of thought actively disagree, rather than silently averaging them.
+  const trendFamily = ['ema', 'structure', 'macd', 'chartPattern', 'price_action'];
+  const reversionFamily = ['rsi', 'divergence'];
+  const trendVotes = catVotes.filter(v => trendFamily.includes(v.category));
+  const reversionVotes = catVotes.filter(v => reversionFamily.includes(v.category));
+  const trendDir = trendVotes.length ? Math.sign(trendVotes.reduce((a, v) => a + v.dir, 0)) : 0;
+  const reversionDir = reversionVotes.length ? Math.sign(reversionVotes.reduce((a, v) => a + v.dir, 0)) : 0;
+  const logicalConflict = trendDir !== 0 && reversionDir !== 0 && trendDir !== reversionDir;
+  if(logicalConflict){
+    confidence -= 10;
+    reasons.push({ bias: 'neutral', text: `🧩 تنبيه تماسك منطقي: مؤشرات الاتجاه (المتوسطات/الهيكل/الزخم) تشير لعكس مؤشرات الارتداد (RSI/الانحراف) — تعارض بين "استمرار الاتجاه" و"تشبع يستدعي ارتدادًا"، وده بيقلل موثوقية الصورة الكلية حتى لو الأصوات بترجّح جانب معيّن.`, category: 'coherence' });
+  }
+  confidence = Math.max(15, Math.min(92, confidence));
+
   let eventWarning = null;
   if(upcomingEvent){
     const minsAway = (upcomingEvent.dateObj.getTime() - Date.now()) / 60000;
@@ -3394,6 +3501,21 @@ function buildRecommendation({ rsi, macd, fib, sr, candle, chartPattern, ema, vw
     reasons.push({ bias: 'neutral', text: `✅ توافق مع الفريم الأعلى (4 ساعات): الاتجاه العام هناك ${htfTrend.trend === 'up' ? 'صاعد' : 'هابط'}، متوافق مع اتجاه الإشارة الحالية.` });
   }
   confidence = Math.max(20, Math.min(92, confidence));
+
+  // -------- Price Action confirmation gate (strong role, per design) --------
+  // This is deliberately heavier-handed than the multi-timeframe check above: when the most
+  // recent bar(s) show a STRONG, decisive move directly against the overall score's direction
+  // (a convincing trend-bar close, not just a minor wobble), that's live, right-now evidence —
+  // arguably more current than any of the slower indicators feeding the score — so it earns a
+  // bigger penalty and a loud warning rather than a quiet vote among many.
+  const paConflict = priceAction && priceAction.strength >= 2 && (
+    (score > 0 && priceAction.bias === 'bear') || (score < 0 && priceAction.bias === 'bull')
+  );
+  if(paConflict){
+    confidence -= 22;
+    reasons.unshift({ bias: 'neutral', text: `🚨 تعارض قوي مع البرايس أكشن اللحظي: آخر شمعة/شمعتين تظهران زخمًا حاسمًا ${priceAction.bias === 'bull' ? 'صاعدًا' : 'هابطًا'} بعكس اتجاه التوصية (${score > 0 ? 'شراء' : 'بيع'}) — تم تخفيض الثقة بشكل كبير، والأفضل الانتظار حتى يتضح البرايس أكشن.` });
+  }
+  confidence = Math.max(15, Math.min(92, confidence));
 
   const qualifies = directionalVotes.length >= MIN_VOTES_FOR_TRADE
     && Math.abs(score) >= MIN_SCORE_FOR_TRADE
@@ -3694,7 +3816,7 @@ function renderExecutiveSummary(rec, { trend5m, trend1h, trend4h, trend1d, sr, s
 
   // One row per indicator category, in a fixed, readable order — reusing the exact bias
   // already computed for that category in rec.reasons (single source of truth, no re-deriving).
-  const order = ['rsi','macd','fib','sr','candle','chartPattern','ema','vwap','structure','smc_zone','liquidity_sweep','premium_discount','breaker_block','inducement','divergence','regime','dxy','volume','sentiment','silver','oil','volatility','seasonal','newsHistory'];
+  const order = ['rsi','macd','fib','sr','candle','price_action','chartPattern','ema','vwap','structure','smc_zone','liquidity_sweep','premium_discount','breaker_block','inducement','divergence','regime','dxy','volume','sentiment','silver','oil','volatility','seasonal','newsHistory','coherence'];
   order.forEach(cat => {
     const reason = rec.reasons.find(r => r.category === cat);
     if(!reason) return;
@@ -3801,6 +3923,7 @@ const CATEGORY_LABELS_AR = {
   volatility: 'حالة التقلب (ATR)', seasonal: 'التحليل الموسمي', newsHistory: 'رد الفعل التاريخي للخبر',
   liquidity_sweep: 'اصطياد السيولة (SMC)', premium_discount: 'علاوة/خصم (OTE)',
   breaker_block: 'Breaker Block', inducement: 'الإنداكمنت (IDM)',
+  price_action: 'برايس أكشن', coherence: 'التماسك المنطقي',
 };
 
 // Renders the "why this confidence %?" transparency panel: one bar per indicator category
@@ -5657,6 +5780,7 @@ async function loadAsset(asset, fullAnalysis = true){
     const boll = computeBollinger(closes, iset.bollPeriod, iset.bollMult);
     const vwap = computeVWAP(candles);
     const candlePattern = detectCandlePattern(candles);
+    const priceAction = computePriceAction(candles);
     const divergence = detectDivergence(candles, 60, iset.rsiPeriod);
     const regime = detectMarketRegime(closes);
 
@@ -5788,7 +5912,7 @@ async function loadAsset(asset, fullAnalysis = true){
     }
 
     const categoryWeights = getCategoryWeightMap();
-    const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, liquidity, premiumDiscount, inducement, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, atrSpike, seasonal, newsHistory, price: livePrice, upcomingEvent, categoryWeights });
+    const rec = buildRecommendation({ rsi, macd, fib, sr, candle: candlePattern, chartPattern, ema, vwap, atr, boll, structure, orderBlocks, fvg, liquidity, premiumDiscount, inducement, priceAction, divergence, regime, htfTrend, dxy, obv, sentiment, silver, oil, atrSpike, seasonal, newsHistory, price: livePrice, upcomingEvent, categoryWeights });
     renderExecutiveSummary(rec, { trend5m, trend1h, trend4h: htfTrend, trend1d, sr, structure, price: livePrice, fullAnalysis });
 
     // Hard safety gate: never present an actionable trade recommendation while the
