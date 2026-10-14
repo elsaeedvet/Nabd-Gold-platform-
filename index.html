@@ -1295,6 +1295,15 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
     </div>
 
     <div class="setting-group">
+      <label class="setting-label">⚡ وضع السكالبينج</label>
+      <p class="setting-hint">يحوّل التحليل لفريم 5 دقائق بدل الساعة، يسرّع التحديث، ويقصّر صلاحية التوصية لساعتين بدل 48 ساعة. ⚠️ السكالبينج بطبيعته أصعب وأعلى مخاطرة (تكلفة السبريد بتاكل جزء أكبر من الحركة الصغيرة، ومحتاج تنفيذ سريع ومتابعة لصيقة). مع TwelveData المجاني هتضرب حد الطلبات بسرعة — Binance/PAXG المجاني هو الخيار العملي هنا.</p>
+      <label class="radio-row" style="cursor:pointer;">
+        <input type="checkbox" id="scalpingModeToggle">
+        <span><strong>تفعيل وضع السكالبينج (فريم 5 دقائق)</strong><small>تقدر ترجع للتحليل العادي وقت ما تحب بإلغاء التفعيل</small></span>
+      </label>
+    </div>
+
+    <div class="setting-group">
       <label class="setting-label">🚫 قاطع الدائرة (حماية من الخسائر المتتالية)</label>
       <p class="setting-hint">لو حصل عدد الخسائر المتتالية ده، هيوقف التطبيق توصيات الدخول الجديدة تلقائيًا لفترة تهدئة، بدل الاستمرار في نفس الأسلوب في سوق ممكن يكون مش مناسب له دلوقتي. حط 0 عشان تلغي الميزة دي.</p>
       <div style="display:flex; gap:10px;">
@@ -1355,7 +1364,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-08-17-08'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-08-17-09'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1367,6 +1376,8 @@ const state = {
   circuitBreakerUntil: localStorage.getItem('nabd_circuitBreakerUntil') ? parseInt(localStorage.getItem('nabd_circuitBreakerUntil'), 10) : null,
   circuitBreakerLossLimit: parseInt(localStorage.getItem('nabd_circuitBreakerLossLimit') || '3', 10),
   circuitBreakerCooldownHours: parseFloat(localStorage.getItem('nabd_circuitBreakerCooldownHours') || '4'),
+  scalpingMode: localStorage.getItem('nabd_scalpingMode') === 'true',
+  scalpTimeframe: localStorage.getItem('nabd_scalpTimeframe') || '5m',
   apiKey: localStorage.getItem('nabd_twelveDataKey') || '',
   aiKey: localStorage.getItem('nabd_aiKey') || '',
   aiProvider: localStorage.getItem('nabd_aiProvider') || 'anthropic',
@@ -1419,6 +1430,7 @@ const ACCENT = { gold: '#F0B90B' };
 // A new qualifying setup becomes a NEW card — it never overwrites or moves an existing one.
 
 const SIGNAL_EXPIRY_HOURS = 48;
+const SCALP_SIGNAL_EXPIRY_HOURS = 2; // scalp trades go stale fast — no point tracking a 5m-timeframe setup for 48h
 const SIGNAL_ENTRY_DEDUPE_PCT = 0.003; // don't spawn a near-duplicate of an already-open signal
 
 function loadSignals(){
@@ -1580,10 +1592,13 @@ function addSignalIfNew(rec){
     closedAt: null,
     advisory: null,
     _lastNotifiedAdvisory: null,
+    isScalp: state.scalpingMode, // remembers the mode active AT CREATION, so toggling the
+    // setting later never retroactively changes how long an already-open trade stays valid
   });
   saveSignals();
   const dirAr = direction === 'buy' ? 'شراء 📈' : 'بيع 📉';
-  notify('🟢 توصية دخول جديدة', `${dirAr} | دخول: ${entry.toFixed(2)} | وقف: ${stop.toFixed(2)} | هدف 1: ${tp1.toFixed(2)}`, 'nabd-entry-' + Date.now());
+  const modeTag = state.scalpingMode ? ' ⚡ (سكالبينج)' : '';
+  notify('🟢 توصية دخول جديدة' + modeTag, `${dirAr} | دخول: ${entry.toFixed(2)} | وقف: ${stop.toFixed(2)} | هدف 1: ${tp1.toFixed(2)}`, 'nabd-entry-' + Date.now());
 }
 
 function signalExitNotifTitle(status){
@@ -1628,7 +1643,8 @@ function updateSignalStatuses(livePrice){
       notify('🔒 تم نقل الوقف لنقطة الدخول', `صفقة ${dirAr} من ${s.entry.toFixed(2)} حققت تقدمًا كافيًا نحو الهدف الأول — تم رفع الوقف تلقائيًا لنقطة الدخول، فأسوأ سيناريو الآن هو الخروج بدون خسارة.`, 'nabd-breakeven-' + s.id);
     }
     const effectiveStop = s.stopMovedToBreakeven ? s.entry : s.stop;
-    if(now - s.createdAt > SIGNAL_EXPIRY_HOURS * 3600000){
+    const expiryHours = s.isScalp ? SCALP_SIGNAL_EXPIRY_HOURS : SIGNAL_EXPIRY_HOURS;
+    if(now - s.createdAt > expiryHours * 3600000){
       s.status = 'expired'; s.closedAt = now; changed = true;
     } else if(s.direction === 'buy'){
       if(livePrice <= effectiveStop){ s.status = s.stopMovedToBreakeven ? 'breakeven' : 'stop'; s.closedAt = now; changed = true; }
@@ -5731,6 +5747,11 @@ async function loadAsset(asset, fullAnalysis = true){
     }
 
     let candles, livePrice, changePercent, sourceLabel;
+    // Scalping mode switches the MAIN analysis timeframe from the default 1h down to the
+    // user's chosen scalp interval (5m by default) — everything downstream (indicators,
+    // levels, signal expiry) reacts to this much faster timeframe instead of the swing one.
+    const mainInterval = state.scalpingMode ? state.scalpTimeframe : '1h';
+    const tdInterval = state.scalpingMode ? (state.scalpTimeframe === '1m' ? '1min' : '5min') : '1h';
 
     if(state.goldSource === 'twelvedata' && state.apiKey){
       // IMPORTANT (TwelveData free-plan credit budget): the full time_series call is the
@@ -5739,9 +5760,12 @@ async function loadAsset(asset, fullAnalysis = true){
       // series — patching just its final bar so the chart/indicators still feel "live" —
       // instead of re-spending credits on a fresh series every single poll. The full series
       // is only re-fetched on an actual full analysis (manual "إعادة التحليل" or first load).
+      // NOTE: scalping mode needs MUCH more frequent full refreshes than this credit-saving
+      // trick allows on the free TwelveData tier — Binance/PAXG (free, unlimited) is the
+      // realistic choice for scalping unless you're on a paid TwelveData plan.
       if(fullAnalysis || !state.candles.gold || !state.candles.gold.length){
         [candles, { price: livePrice, changePercent }] = await Promise.all([
-          fetchTwelveDataSeries(state.apiKey),
+          fetchTwelveDataSeries(state.apiKey, tdInterval),
           fetchTwelveDataPrice(state.apiKey),
         ]);
       } else {
@@ -5756,13 +5780,15 @@ async function loadAsset(asset, fullAnalysis = true){
           low: Math.min(last.low, livePrice),
         };
       }
-      sourceLabel = 'TwelveData · XAU/USD';
+      sourceLabel = state.scalpingMode ? `TwelveData · XAU/USD (سكالبينج ${state.scalpTimeframe})` : 'TwelveData · XAU/USD';
     } else {
       [candles, { price: livePrice, changePercent }] = await Promise.all([
-        fetchBinanceKlines(SYMBOLS.goldPaxg),
+        fetchBinanceKlines(SYMBOLS.goldPaxg, mainInterval),
         fetchBinanceTicker(SYMBOLS.goldPaxg),
       ]);
-      sourceLabel = 'Binance · PAXG/USDT (بديل للذهب، فريم الساعة)';
+      sourceLabel = state.scalpingMode
+        ? `Binance · PAXG/USDT (سكالبينج — فريم ${state.scalpTimeframe})`
+        : 'Binance · PAXG/USDT (بديل للذهب، فريم الساعة)';
     }
 
     // (marketStatus was already checked at the top of this function — if we got here, the
@@ -5997,7 +6023,7 @@ function startPolling(){
     state.refreshTimer = setInterval(() => loadAsset('gold', false), 90000);
     state.fullRefreshTimer = setInterval(() => loadAsset('gold', true), 600000); // every 10 min
   } else {
-    state.refreshTimer = setInterval(() => loadAsset('gold', false), 15000);
+    state.refreshTimer = setInterval(() => loadAsset('gold', false), state.scalpingMode ? 6000 : 15000);
   }
 }
 
@@ -6016,6 +6042,7 @@ function openSettings(){
   $('backendUrlInput').value = state.backendUrl;
   $('minConfidenceSlider').value = state.minConfidence;
   $('autoSpeakToggle').checked = state.autoSpeak;
+  $('scalpingModeToggle').checked = state.scalpingMode;
   $('circuitBreakerLossLimitInput').value = state.circuitBreakerLossLimit;
   $('circuitBreakerCooldownInput').value = state.circuitBreakerCooldownHours;
   $('minConfidenceValue').textContent = state.minConfidence + '%';
@@ -6054,6 +6081,8 @@ function saveSettings(){
   localStorage.setItem('nabd_minConfidence', String(state.minConfidence));
   state.autoSpeak = $('autoSpeakToggle').checked;
   localStorage.setItem('nabd_autoSpeak', String(state.autoSpeak));
+  state.scalpingMode = $('scalpingModeToggle').checked;
+  localStorage.setItem('nabd_scalpingMode', String(state.scalpingMode));
   state.circuitBreakerLossLimit = parseInt($('circuitBreakerLossLimitInput').value, 10) || 0;
   localStorage.setItem('nabd_circuitBreakerLossLimit', String(state.circuitBreakerLossLimit));
   state.circuitBreakerCooldownHours = parseFloat($('circuitBreakerCooldownInput').value) || 4;
