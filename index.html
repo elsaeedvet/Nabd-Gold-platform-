@@ -583,6 +583,12 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 .full-chart-canvas-wrap.price-panel canvas{ height:360px; }
 .full-chart-canvas-wrap.sub-panel canvas{ height:130px; }
 .full-chart-canvas-wrap.sub-panel.small canvas{ height:90px; }
+.fc-tf-tabs{ display:flex; gap:6px; padding:8px 10px; border-bottom:1px solid var(--border); flex-shrink:0; overflow-x:auto; }
+.fc-tf-tabs button{
+  flex:1 0 auto; min-width:52px; padding:8px 10px; border-radius:8px; border:1px solid var(--border);
+  background:var(--surface); color:var(--text-dim); font-size:12px; font-weight:600; font-family:inherit; cursor:pointer;
+}
+.fc-tf-tabs button.active{ background:var(--gold); color:#0A0D14; border-color:var(--gold); }
 .macro-regime-box{
   display:flex; flex-direction:column; gap:3px; padding:10px 12px; border-radius:10px;
   margin-bottom:10px; font-size:11.5px; line-height:1.6; border:1px solid var(--border);
@@ -921,6 +927,14 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
           <span id="fullChartPrice" class="full-chart-price">—</span>
         </div>
         <button id="closeFullChartBtn" class="icon-btn" type="button">✕</button>
+      </div>
+      <div id="fcTfTabs" class="fc-tf-tabs">
+        <button type="button" data-tf="1d">يوم</button>
+        <button type="button" data-tf="4h">4 ساعات</button>
+        <button type="button" data-tf="1h">ساعة</button>
+        <button type="button" data-tf="30m">30 د</button>
+        <button type="button" data-tf="15m">15 د</button>
+        <button type="button" data-tf="5m">5 د</button>
       </div>
       <div class="full-chart-body">
         <div class="full-chart-panel-label">السعر + EMA 50/200 + Bollinger + ZigZag(12,5,2) + Fibonacci (0.5, 0.618) + Volume Profile</div>
@@ -1398,7 +1412,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-08-17-10'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-08-17-11'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1412,6 +1426,8 @@ const state = {
   circuitBreakerCooldownHours: parseFloat(localStorage.getItem('nabd_circuitBreakerCooldownHours') || '4'),
   scalpingMode: localStorage.getItem('nabd_scalpingMode') === 'true',
   scalpTimeframe: localStorage.getItem('nabd_scalpTimeframe') || '5m',
+  fcTimeframe: localStorage.getItem('nabd_fcTimeframe') || '1h',
+  fcCache: {},
   apiKey: localStorage.getItem('nabd_twelveDataKey') || '',
   aiKey: localStorage.getItem('nabd_aiKey') || '',
   aiProvider: localStorage.getItem('nabd_aiProvider') || 'anthropic',
@@ -2715,8 +2731,7 @@ function fcLegend(ctx, items){
   });
 }
 
-function renderFullChart(){
-  const all = state.candles.gold;
+function renderFullChart(all){
   if(!all || all.length < 60){ showToast('مفيش بيانات شموع كافية لعرض الشارت لسه.'); return; }
   const N = 90;
   const candles = all.slice(-N);
@@ -2743,7 +2758,7 @@ function renderFullChart(){
   }
   const bMid = slice(bbMid), bUp = slice(bbUp), bLo = slice(bbLo);
 
-  $('fullChartPrice').textContent = formatPrice(candles[candles.length - 1].close) + ' · ' + (state.scalpingMode ? state.scalpTimeframe : '1h');
+  $('fullChartPrice').textContent = formatPrice(candles[candles.length - 1].close) + ' · ' + FC_TIMEFRAMES[state.fcTimeframe].label;
 
   // ---------- PRICE PANEL ----------
   {
@@ -2921,10 +2936,47 @@ function renderFullChart(){
   }
 }
 
+// Timeframes selectable on the full-screen chart. Candles are fetched PER TIMEFRAME and kept
+// separate from state.candles.gold (the main analysis series), so flipping tabs here never
+// disturbs the live recommendation engine. 300 candles are fetched so EMA200 is valid even on
+// the first visible bar; the chart shows the most recent 90. Cached 60s per timeframe so rapid
+// tab-flipping doesn't hammer the data source (matters on the free TwelveData credit budget).
+const FC_TIMEFRAMES = {
+  '1d':  { label: 'يوم',     binance: '1d',  td: '1day'  },
+  '4h':  { label: '4 ساعات', binance: '4h',  td: '4h'    },
+  '1h':  { label: 'ساعة',    binance: '1h',  td: '1h'    },
+  '30m': { label: '30 دقيقة', binance: '30m', td: '30min' },
+  '15m': { label: '15 دقيقة', binance: '15m', td: '15min' },
+  '5m':  { label: '5 دقائق', binance: '5m',  td: '5min'  },
+};
+const FC_CACHE_MS = 60000;
+
+async function loadFullChartTimeframe(tf){
+  const cfg = FC_TIMEFRAMES[tf];
+  if(!cfg) return;
+  state.fcTimeframe = tf;
+  localStorage.setItem('nabd_fcTimeframe', tf);
+  document.querySelectorAll('#fcTfTabs button').forEach(b => b.classList.toggle('active', b.dataset.tf === tf));
+  const cached = state.fcCache[tf];
+  if(cached && Date.now() - cached.fetchedAt < FC_CACHE_MS){ renderFullChart(cached.candles); return; }
+  $('fullChartPrice').textContent = '⏳ جارٍ تحميل فريم ' + cfg.label + '…';
+  try{
+    const candles = (state.goldSource === 'twelvedata' && state.apiKey)
+      ? await fetchTwelveDataSeries(state.apiKey, cfg.td, 300)
+      : await fetchBinanceKlines(SYMBOLS.goldPaxg, cfg.binance, 300);
+    state.fcCache[tf] = { candles, fetchedAt: Date.now() };
+    // if the user already flipped to a different tab while this was loading, don't paint stale data over it
+    if(state.fcTimeframe === tf) renderFullChart(candles);
+  }catch(e){
+    $('fullChartPrice').textContent = '—';
+    showToast('تعذر تحميل فريم ' + cfg.label + ' — ' + (e.message || 'تحقق من الاتصال'));
+  }
+}
+
 function openFullChart(){
   $('fullChartPage').classList.remove('hidden');
   document.body.style.overflow = 'hidden';
-  setTimeout(renderFullChart, 50);
+  setTimeout(() => loadFullChartTimeframe(state.fcTimeframe), 50);
 }
 function closeFullChart(){
   $('fullChartPage').classList.add('hidden');
@@ -6868,7 +6920,11 @@ function init(){
   $('performanceBtn').addEventListener('click', openPerformancePanel);
   $('openFullChartBtn').addEventListener('click', openFullChart);
   $('closeFullChartBtn').addEventListener('click', closeFullChart);
-  window.addEventListener('resize', () => { if(!$('fullChartPage').classList.contains('hidden')) renderFullChart(); });
+  document.querySelectorAll('#fcTfTabs button').forEach(b => b.addEventListener('click', () => loadFullChartTimeframe(b.dataset.tf)));
+  window.addEventListener('resize', () => {
+    const c = state.fcCache[state.fcTimeframe];
+    if(!$('fullChartPage').classList.contains('hidden') && c) renderFullChart(c.candles);
+  });
   $('aiChatBtn').addEventListener('click', openAiChat);
   $('closeAiChat').addEventListener('click', closeAiChat);
   $('clearAiChatBtn').addEventListener('click', clearAiChat);
