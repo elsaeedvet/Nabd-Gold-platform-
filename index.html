@@ -937,12 +937,10 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
         <button type="button" data-tf="5m">5 د</button>
       </div>
       <div class="full-chart-body">
-        <div class="full-chart-panel-label">السعر + EMA 50/200 + Bollinger + ZigZag(12,5,2) + Fibonacci (0.5, 0.618) + Volume Profile</div>
+        <div class="full-chart-panel-label">السعر + EMA 50/200 + Bollinger + ZigZag(12,5,2) + Fibonacci (0.5, 0.618) + VWAP + Volume Profile</div>
         <div class="full-chart-canvas-wrap price-panel"><canvas id="fcPriceCanvas"></canvas></div>
         <div class="full-chart-panel-label">RSI (14) + انحراف (Divergence)</div>
         <div class="full-chart-canvas-wrap sub-panel"><canvas id="fcRsiCanvas"></canvas></div>
-        <div class="full-chart-panel-label">MACD (12, 26, 9)</div>
-        <div class="full-chart-canvas-wrap sub-panel"><canvas id="fcMacdCanvas"></canvas></div>
         <div class="full-chart-panel-label">ATR (14)</div>
         <div class="full-chart-canvas-wrap sub-panel small"><canvas id="fcAtrCanvas"></canvas></div>
       </div>
@@ -1412,7 +1410,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-08-17-11'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-08-17-12'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -2698,6 +2696,31 @@ function fcVolumeProfile(candles, bins = 24){
   return buckets.map(b => ({ ...b, pct: b.volume / mv }));
 }
 
+// VWAP = Σ(typical price × volume) ÷ Σ(volume). Intraday frames anchor (reset) at each UTC day
+// start — the standard session-VWAP convention. On the daily frame a per-day reset would be a
+// single bar, so it anchors at the first visible bar instead. If the feed carries no volume at
+// all (e.g. TwelveData XAU/USD — OTC gold has no central volume) every bar is weighted equally,
+// which turns this into an average typical price; the legend flags that as approximate (≈).
+function fcVwapSeries(all, tf, offset){
+  const hasVol = all.some(c => c.volume > 0);
+  const dayKey = c => { let t = typeof c.time === 'number' ? c.time : Date.parse(c.time); if(t < 1e12) t *= 1000; return Math.floor(t / 86400000); };
+  const startIdx = tf === '1d' ? offset : 0;
+  const out = Array(all.length).fill(null);
+  let cumPV = 0, cumV = 0, curDay = null;
+  for(let i = startIdx; i < all.length; i++){
+    const c = all[i];
+    if(tf !== '1d'){
+      const d = dayKey(c);
+      if(!Number.isNaN(d) && d !== curDay){ curDay = d; cumPV = 0; cumV = 0; }
+    }
+    const v = hasVol ? (c.volume || 0) : 1;
+    const tp = (c.high + c.low + c.close) / 3;
+    cumPV += tp * v; cumV += v;
+    out[i] = cumV > 0 ? cumPV / cumV : tp;
+  }
+  return { series: out.slice(offset), approx: !hasVol };
+}
+
 function fcSetupCanvas(id){
   const canvas = $(id);
   const dpr = window.devicePixelRatio || 1;
@@ -2721,13 +2744,16 @@ function fcLine(ctx, vals, xFor, yFor, color, width = 1.4, dash = null){
   ctx.stroke(); ctx.setLineDash([]);
 }
 
-function fcLegend(ctx, items){
+function fcLegend(ctx, items, maxW){
   ctx.font = '600 10px sans-serif'; ctx.textBaseline = 'top';
-  let x = 8;
+  let x = 8, row = 0;
   items.forEach(it => {
-    ctx.fillStyle = it.color; ctx.fillRect(x, 8, 10, 3);
-    ctx.fillStyle = '#C9D1D9'; ctx.fillText(it.text, x + 14, 5);
-    x += 14 + ctx.measureText(it.text).width + 10;
+    const itemW = 14 + ctx.measureText(it.text).width + 10;
+    if(maxW && x > 8 && x + itemW > maxW - 8){ x = 8; row++; }
+    const dy = row * 13;
+    ctx.fillStyle = it.color; ctx.fillRect(x, 8 + dy, 10, 3);
+    ctx.fillStyle = '#C9D1D9'; ctx.fillText(it.text, x + 14, 5 + dy);
+    x += itemW;
   });
 }
 
@@ -2742,8 +2768,6 @@ function renderFullChart(all){
   const ema50 = slice(computeEMA(closes, 50));
   const ema200 = slice(computeEMA(closes, 200));
   const rsiSeries = slice(computeRSISeries(closes, 14));
-  const macd = computeMACD(closes, 12, 26, 9);
-  const macdLine = slice(macd.macdLine), macdSig = slice(macd.signalLine), macdHist = slice(macd.histogram);
   const atrAll = computeATRSeries(all, 14);
   const atrSeries = Array(all.length - atrAll.length).fill(null).concat(atrAll).slice(offset);
 
@@ -2757,18 +2781,19 @@ function renderFullChart(all){
     bbMid.push(m); bbUp.push(m + 2 * sd); bbLo.push(m - 2 * sd);
   }
   const bMid = slice(bbMid), bUp = slice(bbUp), bLo = slice(bbLo);
+  const vwapInfo = fcVwapSeries(all, state.fcTimeframe, offset);
 
   $('fullChartPrice').textContent = formatPrice(candles[candles.length - 1].close) + ' · ' + FC_TIMEFRAMES[state.fcTimeframe].label;
 
   // ---------- PRICE PANEL ----------
   {
     const { ctx, w, h } = fcSetupCanvas('fcPriceCanvas');
-    const padL = 6, padR = 58, padT = 22, padB = 18;
+    const padL = 6, padR = 58, padT = 36, padB = 18;
     const vpW = 50; // volume profile strip width (left side)
     const plotL = padL + vpW, plotR = w - padR;
     const lows = candles.map(c => c.low), highs = candles.map(c => c.high);
     let hi = Math.max(...highs), lo = Math.min(...lows);
-    [bUp, bLo].forEach(a => a.forEach(v => { if(v != null){ hi = Math.max(hi, v); lo = Math.min(lo, v); } }));
+    [bUp, bLo, vwapInfo.series].forEach(a => a.forEach(v => { if(v != null){ hi = Math.max(hi, v); lo = Math.min(lo, v); } }));
     const rng = (hi - lo) || 1; hi += rng * 0.03; lo -= rng * 0.03;
     const yFor = v => padT + (hi - v) / (hi - lo) * (h - padT - padB);
     const step = (plotR - plotL) / candles.length;
@@ -2828,6 +2853,7 @@ function renderFullChart(all){
     // EMAs
     fcLine(ctx, ema50, xFor, yFor, '#F0B90B', 1.6);
     fcLine(ctx, ema200, xFor, yFor, '#58A6FF', 1.8);
+    fcLine(ctx, vwapInfo.series, xFor, yFor, '#FF5CAA', 1.8);
 
     // ZigZag (12, 5, 2)
     const zz = fcZigZag(candles, 12, 5, 2);
@@ -2850,7 +2876,8 @@ function renderFullChart(all){
       { color: '#F0B90B', text: 'EMA50' }, { color: '#58A6FF', text: 'EMA200' },
       { color: '#A371F7', text: 'BB(20,2)' }, { color: '#FFFFFF', text: 'ZigZag 12/5/2' },
       { color: '#FF9F43', text: 'Fib .5/.618' },
-    ]);
+      { color: '#FF5CAA', text: 'VWAP' + (state.fcTimeframe === '1d' ? ' تراكمي' : ' يومي') + (vwapInfo.approx ? ' ≈' : '') },
+    ], w);
   }
 
   // ---------- RSI PANEL ----------
@@ -2891,31 +2918,6 @@ function renderFullChart(all){
     }
     const lastRsi = rsiSeries[rsiSeries.length - 1];
     fcLegend(ctx, [{ color: '#F0B90B', text: `RSI(14) ${lastRsi != null ? lastRsi.toFixed(1) : '—'}` }, { color: '#26A69A', text: 'Div(50)' }]);
-  }
-
-  // ---------- MACD PANEL ----------
-  {
-    const { ctx, w, h } = fcSetupCanvas('fcMacdCanvas');
-    const padL = 6, padR = 58, padT = 20, padB = 8;
-    const plotL = padL, plotR = w - padR;
-    const vals = [...macdLine, ...macdSig, ...macdHist].filter(v => v != null);
-    const m = Math.max(...vals.map(Math.abs), 0.0001);
-    const yFor = v => padT + (m - v) / (2 * m) * (h - padT - padB);
-    const step = (plotR - plotL) / candles.length;
-    const xFor = i => plotL + step * i + step / 2;
-    ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(plotL, yFor(0)); ctx.lineTo(plotR, yFor(0)); ctx.stroke();
-    macdHist.forEach((v, i) => {
-      if(v == null) return;
-      ctx.fillStyle = v >= 0 ? 'rgba(38,166,154,.7)' : 'rgba(239,83,80,.7)';
-      const y0 = yFor(0), y1 = yFor(v);
-      ctx.fillRect(xFor(i) - Math.max(1, step * 0.3), Math.min(y0, y1), Math.max(2, step * 0.6), Math.abs(y1 - y0));
-    });
-    fcLine(ctx, macdLine, xFor, yFor, '#58A6FF', 1.5);
-    fcLine(ctx, macdSig, xFor, yFor, '#FF9F43', 1.5);
-    ctx.fillStyle = '#8B949E'; ctx.font = '10px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    ctx.fillText(m.toFixed(2), plotR + 4, yFor(m)); ctx.fillText('0', plotR + 4, yFor(0)); ctx.fillText((-m).toFixed(2), plotR + 4, yFor(-m));
-    fcLegend(ctx, [{ color: '#58A6FF', text: 'MACD' }, { color: '#FF9F43', text: 'Signal' }, { color: '#26A69A', text: 'Hist' }]);
   }
 
   // ---------- ATR PANEL ----------
