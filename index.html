@@ -946,6 +946,8 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
         <button type="button" data-tf="1m">1 د</button>
       </div>
       <div id="fcTools" class="fc-tools">
+        <button type="button" class="fc-chip" data-tool="zones">المناطق</button>
+        <button type="button" class="fc-chip" data-tool="zonesWeak">ضعيفة (3)</button>
         <button type="button" class="fc-chip" data-tool="lvDay">يوم/أسبوع</button>
         <button type="button" class="fc-chip" data-tool="lvSess">الجلسات</button>
         <button type="button" class="fc-chip" data-tool="lvVa">POC/VA</button>
@@ -1468,6 +1470,10 @@ const state = {
   fcLvSess: localStorage.getItem('nabd_fcLvSess') !== 'false',
   fcLvVa: localStorage.getItem('nabd_fcLvVa') !== 'false',
   fcSd3: localStorage.getItem('nabd_fcSd3') === 'true',
+  fcZones: localStorage.getItem('nabd_fcZones') !== 'false',
+  fcZonesWeak: localStorage.getItem('nabd_fcZonesWeak') === 'true',
+  fcPrevZones: [],
+  fcZoneHits: [],
   fcLevelsCache: null,
   fcSess: (() => {
     const base = { asia: { tz: 'UTC', s: 0, e: 8 }, london: { tz: 'Europe/London', s: 8, e: 16 }, ny: { tz: 'America/New_York', s: 8, e: 16 } };
@@ -3062,7 +3068,9 @@ function fcSessionRange(m5, cfg, nowMs){
     const end = Math.min(e, nowMs + 1);
     const cs = m5.filter(c => { const t = fcT(c); return t >= s && t < end; });
     if(!cs.length) continue;
-    return { start: s, end: e, active: nowMs < e, high: Math.max(...cs.map(c => c.high)), low: Math.min(...cs.map(c => c.low)), candles: cs };
+    let hiC = cs[0], loC = cs[0];
+    cs.forEach(c => { if(c.high > hiC.high) hiC = c; if(c.low < loC.low) loC = c; });
+    return { start: s, end: e, active: nowMs < e, high: hiC.high, low: loC.low, highTs: fcT(hiC), lowTs: fcT(loC), candles: cs };
   }
   return null;
 }
@@ -3098,7 +3106,7 @@ function fcValueArea(candles, bins = 60){
 function fcBuildLevels(lv, nowMs, cfg){
   const L = [], dayMs = 86400000, today = Math.floor(nowMs / dayMs) * dayMs;
   const m5 = (lv && lv.m5) || [], w1 = (lv && lv.w1) || [];
-  const add = (key, price, group, color, dash) => { if(price != null && isFinite(price)) L.push({ key, label: key, price, group, color, dash }); };
+  const add = (key, price, group, color, dash, ts) => { if(price != null && isFinite(price)) L.push({ key, label: key, price, group, color, dash, ts: ts || 0 }); };
   // previous TRADING day: the latest earlier UTC day with a meaningful number of bars (skips weekends)
   let pdC = null;
   for(let k = 1; k <= 5 && !pdC; k++){
@@ -3106,17 +3114,19 @@ function fcBuildLevels(lv, nowMs, cfg){
     if(cs.length >= 50) pdC = cs;
   }
   if(pdC){
-    add('PDH', Math.max(...pdC.map(c => c.high)), 'day', '#F2CC60', [6, 3]);
-    add('PDL', Math.min(...pdC.map(c => c.low)), 'day', '#F2CC60', [6, 3]);
-    add('PDC', pdC[pdC.length - 1].close, 'day', '#F2CC60', [2, 3]);
+    // the extreme candle's timestamp lets the levels engine tell "same candle" (one real level) from a true confluence
+    const pdHiC = pdC.reduce((a, c) => c.high > a.high ? c : a), pdLoC = pdC.reduce((a, c) => c.low < a.low ? c : a);
+    add('PDH', pdHiC.high, 'day', '#F2CC60', [6, 3], fcT(pdHiC));
+    add('PDL', pdLoC.low, 'day', '#F2CC60', [6, 3], fcT(pdLoC));
+    add('PDC', pdC[pdC.length - 1].close, 'day', '#F2CC60', [2, 3], fcT(pdC[pdC.length - 1]));
   }
   const todays = m5.filter(c => fcT(c) >= today);
-  if(todays.length) add('DO', todays[0].open, 'day', '#4DD0E1', []);
+  if(todays.length) add('DO', todays[0].open, 'day', '#4DD0E1', [], fcT(todays[0]));
   // previous week
   const weekStart = today - ((new Date(today).getUTCDay() + 6) % 7) * dayMs;
   let pw = null;
   w1.forEach(c => { const t = fcT(c); if(t < weekStart && t >= weekStart - 8 * dayMs) pw = c; });
-  if(pw){ add('PWH', pw.high, 'week', '#BA68C8', [8, 4]); add('PWL', pw.low, 'week', '#BA68C8', [8, 4]); }
+  if(pw){ add('PWH', pw.high, 'week', '#BA68C8', [8, 4], fcT(pw)); add('PWL', pw.low, 'week', '#BA68C8', [8, 4], fcT(pw)); }
   // sessions
   const SN = { asia: ['Asia', '#80CBC4'], london: ['Lon', '#FFB74D'], ny: ['NY', '#EF9A9A'] };
   const ranges = [];
@@ -3124,8 +3134,8 @@ function fcBuildLevels(lv, nowMs, cfg){
     const r = fcSessionRange(m5, cfg[k], nowMs);
     if(!r) return;
     ranges.push(r);
-    add(SN[k][0] + ' H', r.high, 'sess', SN[k][1], [3, 3]);
-    add(SN[k][0] + ' L', r.low, 'sess', SN[k][1], [3, 3]);
+    add(SN[k][0] + ' H', r.high, 'sess', SN[k][1], [3, 3], r.highTs);
+    add(SN[k][0] + ' L', r.low, 'sess', SN[k][1], [3, 3], r.lowTs);
   });
   // value area: current (or last finished) session, and previous day
   const cur = ranges.filter(r => r.active).sort((a, b) => b.start - a.start)[0] || ranges.sort((a, b) => b.end - a.end)[0];
@@ -3162,6 +3172,209 @@ function fcAnchoredVwap(all, offset, cfg){
     out.vwap.push(W > 0 ? mean : tp); out.sd.push(W > 0 ? Math.sqrt(Math.max(0, S / W)) : 0); out.seg.push(ai);
   }
   return { vwap: out.vwap.slice(offset), sd: out.sd.slice(offset), seg: out.seg.slice(offset), approx: !hasVol };
+}
+
+// ================= Levels engine (zones): dedupe → cluster → score → hysteresis → select =================
+// Turns the many raw lines (day / week / sessions / value area / VWAP bands / EMA50(15m) / FVG / OB / liquidity /
+// round numbers) into a handful of merged, SCORED zones. Pure functions apart from the hysteresis memory that the
+// caller passes in, so they can be unit-tested outside the browser.
+//   tolerance  = max(1.0, 0.5 × ATR(14, 5m))     zone width cap = 1.0 × ATR(5m)     view window = ±4 × ATR(14, 15m)
+//   score      = Σ weight per level TYPE (each type counted once per zone), capped at 10; shown when ≥ 4 (3 = weak, optional)
+const FC_ENGINE = { tolMult: 0.5, minTol: 1.0, maxZoneWidthMult: 1.0, padMult: 0.25, windowMult: 4, minScore: 4, weakScore: 3, maxPerSide: 3, stickiness: 1, coincidentEps: 0.05, maxScore: 10, minAtr: 1.5 };
+const FC_WEIGHTS = { PDH: 2, PDL: 2, PDC: 1, DO: 2, PWH: 2, PWL: 2, SESS_HIGH: 1, SESS_LOW: 1, ROUND25: 1, ROUND100: 2, POC: 1, VAH: 1, VAL: 1, VWAP_S1: 1, VWAP_S2: 1, EMA50_15M: 1, FVG: 1, OB: 1, LIQ_POOL: 1 };
+const FC_TIER_AR = { strong: 'قوية', medium: 'متوسطة', weak: 'ضعيفة' };
+
+function fcLevelType(l){
+  if(l.wtype) return l.wtype;
+  if(l.type) return l.type;
+  const k = l.key || '';
+  if(['PDH', 'PDL', 'PDC', 'DO', 'PWH', 'PWL'].includes(k)) return k;
+  if(l.group === 'sess') return / H$/.test(k) ? 'SESS_HIGH' : 'SESS_LOW';
+  if(k.startsWith('POC')) return 'POC';
+  if(k.startsWith('VAH')) return 'VAH';
+  if(k.startsWith('VAL')) return 'VAL';
+  return null;
+}
+
+// Two levels at (almost) the same price that come from the SAME candle are one real extreme (e.g. yesterday's low
+// that was also the New-York low): count the heavier one once and merge the labels. Same price from DIFFERENT
+// candles is a genuine confluence and keeps both.
+function fcDedupeCoincident(levels){
+  const out = [];
+  [...levels].sort((a, b) => a.price - b.price).forEach(l => {
+    const twin = out.find(o => Math.abs(o.price - l.price) <= FC_ENGINE.coincidentEps && o.ts > 0 && o.ts === l.ts && !o.dynamic && !l.dynamic);
+    if(twin){
+      if((FC_WEIGHTS[l.wtype] || 0) > (FC_WEIGHTS[twin.wtype] || 0)) twin.wtype = l.wtype;
+      if(!twin.label.split('/').includes(l.label)) twin.label += '/' + l.label;
+    } else out.push({ ...l });
+  });
+  return out;
+}
+
+function fcClusterLevels(levels, atr5){
+  const tol = Math.max(FC_ENGINE.minTol, FC_ENGINE.tolMult * atr5), maxW = FC_ENGINE.maxZoneWidthMult * atr5;
+  const zones = [];
+  let cur = null;
+  [...levels].sort((a, b) => a.price - b.price).forEach(l => {
+    if(cur && l.price - cur.hi <= tol && l.price - cur.lo <= maxW){ cur.items.push(l); cur.hi = l.price; }
+    else { cur = { lo: l.price, hi: l.price, items: [l] }; zones.push(cur); }
+  });
+  return zones;
+}
+
+function fcScoreZone(z, atr5){
+  const byType = {};
+  z.items.forEach(it => { byType[it.wtype] = Math.max(byType[it.wtype] || 0, FC_WEIGHTS[it.wtype] || 0); });
+  z.score = Math.min(FC_ENGINE.maxScore, Object.values(byType).reduce((a, b) => a + b, 0));
+  let sw = 0, sp = 0;
+  z.items.forEach(it => { const w = FC_WEIGHTS[it.wtype] || 0; sw += w; sp += w * it.price; });
+  z.center = sw ? sp / sw : (z.lo + z.hi) / 2;
+  const pad = FC_ENGINE.padMult * atr5;              // minimum drawn width = 0.5 × ATR
+  z.top = Math.max(z.hi, z.center + pad);
+  z.bottom = Math.min(z.lo, z.center - pad);
+  z.tier = z.score >= 6 ? 'strong' : z.score >= 4 ? 'medium' : 'weak';
+  z.labels = [...new Set(z.items.map(i => i.label))];
+  z.dynamicOnly = z.items.every(i => i.dynamic);
+  const main = [...z.items].sort((a, b) => (FC_WEIGHTS[b.wtype] || 0) - (FC_WEIGHTS[a.wtype] || 0) || (a.dynamic ? 1 : 0) - (b.dynamic ? 1 : 0))[0];
+  z.mainLabel = main ? main.label : '';
+  return z;
+}
+
+// A zone that was already on screen keeps showing while its score is within `stickiness` of the threshold,
+// so a zone does not flicker in and out from one candle to the next.
+function fcApplyHysteresis(zones, minScore, prev){
+  return zones.filter(z => {
+    const was = (prev || []).some(p => Math.abs(p.center - z.center) <= 1.0);
+    return !z.dynamicOnly && z.score >= (was ? minScore - FC_ENGINE.stickiness : minScore);
+  });
+}
+
+function fcComputeZones(rawLevels, price, atr5, atr15, minScore, prev){
+  atr5 = Math.max(FC_ENGINE.minAtr, atr5 || 0); atr15 = Math.max(FC_ENGINE.minAtr, atr15 || 0);
+  const win = FC_ENGINE.windowMult * atr15;
+  const L = [];
+  rawLevels.forEach(l => { const t = fcLevelType(l); if(t) L.push({ ...l, wtype: t, ts: l.ts || 0, label: l.label || l.key || '' }); });
+  const lo = Math.floor((price - win) / 25) * 25, hi = Math.ceil((price + win) / 25) * 25;
+  for(let p = lo; p <= hi; p += 25) L.push({ key: 'R' + p, label: String(p), price: p, group: 'round', wtype: p % 100 === 0 ? 'ROUND100' : 'ROUND25', ts: 0, dynamic: false });
+  const all = fcClusterLevels(fcDedupeCoincident(L), atr5).map(z => fcScoreZone(z, atr5));
+  const shown = fcApplyHysteresis(all, minScore, prev);
+  const inWin = shown.filter(z => Math.abs(z.center - price) <= win);
+  const above = inWin.filter(z => z.center > price).sort((a, b) => a.center - b.center).slice(0, FC_ENGINE.maxPerSide);
+  const below = inWin.filter(z => z.center <= price).sort((a, b) => b.center - a.center).slice(0, FC_ENGINE.maxPerSide);
+  return { all, shown, draw: above.concat(below), win, atr5, atr15, minScore };
+}
+
+// ---------- inputs the engine needs beyond the named levels ----------
+function fcAggregate(c5, factor){
+  const ms = 300000 * factor, out = [];
+  let cur = null, key = null;
+  c5.forEach(c => {
+    const t = fcT(c), k = Math.floor(t / ms);
+    if(k !== key){ key = k; cur = { time: k * ms, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 }; out.push(cur); }
+    else { cur.high = Math.max(cur.high, c.high); cur.low = Math.min(cur.low, c.low); cur.close = c.close; cur.volume += c.volume || 0; }
+  });
+  return out;
+}
+
+// Current VWAP(session) ±1σ/±2σ, EMA50 on 15m, still-open FVGs, unmitigated OBs and equal-high/low liquidity pools.
+function fcDynamicLevels(m5, m15, atr15){
+  const out = [], push = o => { if(o.price != null && isFinite(o.price)) out.push(o); };
+  try{
+    const v = fcAnchoredVwap(m5, 0, state.fcSess), i = v.vwap.length - 1;
+    let cnt = 0; while(i - cnt >= 0 && v.seg[i - cnt] === v.seg[i]) cnt++;
+    if(i >= 0 && v.seg[i] >= 0 && cnt >= 10 && v.sd[i] > 0 && v.vwap[i] != null){   // σ is unstable in the first 10 bars of a session
+      [[1, 'VWAP_S1'], [-1, 'VWAP_S1'], [2, 'VWAP_S2'], [-2, 'VWAP_S2']].forEach(([k, type]) => {
+        const lbl = 'VWAP' + (k > 0 ? '+' : '−') + Math.abs(k) + 'σ';
+        push({ key: lbl, label: lbl, price: v.vwap[i] + k * v.sd[i], group: 'dyn', type, dynamic: true, ts: 0 });
+      });
+    }
+  }catch(e){}
+  try{
+    if(m15.length >= 50){ const e = computeEMA(m15.map(c => c.close), 50); push({ key: 'EMA50(15m)', label: 'EMA50(15m)', price: e[e.length - 1], group: 'dyn', type: 'EMA50_15M', dynamic: true, ts: 0 }); }
+  }catch(e){}
+  try{
+    const s = m15.slice(-80), gaps = [];
+    for(let i = 2; i < s.length; i++){
+      const a = s[i - 2], c = s[i];
+      if(a.high < c.low){
+        const bottom = a.high, top = c.low;
+        if(top - bottom >= 0.3 * atr15 && !s.slice(i + 1).some(x => x.low <= bottom)) gaps.push({ price: (top + bottom) / 2, ts: s[i].time });
+      } else if(a.low > c.high){
+        const top = a.low, bottom = c.high;
+        if(top - bottom >= 0.3 * atr15 && !s.slice(i + 1).some(x => x.high >= top)) gaps.push({ price: (top + bottom) / 2, ts: s[i].time });
+      }
+    }
+    gaps.slice(-3).forEach(g => push({ key: 'FVG', label: 'FVG', price: g.price, group: 'dyn', type: 'FVG', dynamic: false, ts: g.ts }));
+  }catch(e){}
+  try{
+    const ob = detectOrderBlocks(m15, 60), base = m15.length - Math.min(60, m15.length);
+    [ob.bull && { b: ob.bull, p: ob.bull.top }, ob.bear && { b: ob.bear, p: ob.bear.bottom }].filter(Boolean).forEach(({ b, p }) => {
+      if(!b.mitigated && !b.broken) push({ key: 'OB', label: 'OB', price: p, group: 'dyn', type: 'OB', dynamic: false, ts: (m15[base + b.idx] || {}).time || 0 });
+    });
+  }catch(e){}
+  try{
+    const lq = detectLiquidityZones(m15, 80);
+    if(lq.buySideLiquidity) push({ key: 'EQH', label: 'EQH', price: lq.buySideLiquidity.price, group: 'dyn', type: 'LIQ_POOL', dynamic: false, ts: 0 });
+    if(lq.sellSideLiquidity) push({ key: 'EQL', label: 'EQL', price: lq.sellSideLiquidity.price, group: 'dyn', type: 'LIQ_POOL', dynamic: false, ts: 0 });
+  }catch(e){}
+  return out;
+}
+
+function fcZonesForChart(levels, lv, px){
+  const m5 = (lv && lv.m5) || [];
+  if(m5.length < 60) return null;
+  const m15 = fcAggregate(m5, 3);
+  const atr5 = computeATR(m5, 14) || 0, atr15 = computeATR(m15, 14) || 0;
+  const dyn = fcDynamicLevels(m5, m15, Math.max(FC_ENGINE.minAtr, atr15));
+  const minScore = state.fcZonesWeak ? FC_ENGINE.weakScore : FC_ENGINE.minScore;
+  const res = fcComputeZones(levels.concat(dyn), px, atr5, atr15, minScore, state.fcPrevZones || []);
+  state.fcPrevZones = res.shown;
+  return res;
+}
+
+// ---------- zone drawing ----------
+function fcDrawZoneRects(ctx, zones, price, yFor, plotL, plotR){
+  zones.forEach(z => {
+    const y1 = yFor(z.top), y2 = yFor(z.bottom), hgt = Math.max(2, y2 - y1);
+    const rgb = (price >= z.bottom && price <= z.top) ? '240,185,11' : (z.center > price ? '255,77,94' : '0,229,160');
+    const a = z.tier === 'strong' ? 0.22 : z.tier === 'medium' ? 0.13 : 0.07;
+    ctx.fillStyle = 'rgba(' + rgb + ',' + a + ')'; ctx.fillRect(plotL, y1, plotR - plotL, hgt);
+    ctx.strokeStyle = 'rgba(' + rgb + ',' + Math.min(0.9, a + 0.35) + ')'; ctx.lineWidth = 1; ctx.setLineDash(z.tier === 'strong' ? [] : [4, 3]);
+    ctx.beginPath(); ctx.moveTo(plotL, y1); ctx.lineTo(plotR, y1); ctx.moveTo(plotL, y2); ctx.lineTo(plotR, y2); ctx.stroke(); ctx.setLineDash([]);
+  });
+}
+
+// One pill per zone at the right edge, nudged apart so two labels never overprint. Returns hit boxes for tap-to-inspect.
+function fcDrawZoneLabels(ctx, zones, yFor, plotR, top, bottom){
+  const items = zones.map(z => ({ z, y: (yFor(z.top) + yFor(z.bottom)) / 2 })).filter(i => i.y > top && i.y < bottom).sort((a, b) => a.y - b.y);
+  const hits = [];
+  let lastY = -99;
+  ctx.save(); ctx.direction = 'ltr'; ctx.font = '700 9.5px monospace'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';   // ltr: the page is RTL and would reverse the number order
+  items.forEach(it => {
+    let y = it.y; if(y - lastY < 13) y = lastY + 13; lastY = y;
+    const z = it.z, txt = z.bottom.toFixed(1) + '–' + z.top.toFixed(1) + ' · ' + z.mainLabel + ' ★' + z.score;
+    const w = ctx.measureText(txt).width + 8;
+    ctx.fillStyle = 'rgba(13,17,23,.9)'; ctx.fillRect(plotR - 4 - w, y - 6.5, w, 13);
+    ctx.fillStyle = z.tier === 'strong' ? '#FFD84D' : '#C9D1D9'; ctx.fillText(txt, plotR - 8, y + 0.5);
+    hits.push({ y1: yFor(z.top), y2: yFor(z.bottom), text: 'منطقة ' + z.bottom.toFixed(1) + '–' + z.top.toFixed(1) + ' · ' + z.score + ' نقاط (' + FC_TIER_AR[z.tier] + ') — ' + z.labels.join('، ') });
+  });
+  ctx.restore();
+  return hits;
+}
+
+// Off-screen zones don't stretch the axis (that flattens the candles); the nearest one per side shows as an edge badge.
+function fcDrawZoneBadges(ctx, offAbove, offBelow, price, plotR, top, bottom){
+  const badge = (z, up, more, y) => {
+    const txt = (up ? '▲ ' : '▼ ') + z.bottom.toFixed(1) + '–' + z.top.toFixed(1) + ' · ★' + z.score + ' (' + (up ? '+' : '−') + Math.abs(z.center - price).toFixed(1) + ')' + (more > 0 ? ' +' + more : '');
+    ctx.save(); ctx.direction = 'ltr'; ctx.font = '700 9.5px monospace'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    const w = ctx.measureText(txt).width + 10;
+    ctx.fillStyle = 'rgba(13,17,23,.92)'; ctx.fillRect(plotR - 4 - w, y - 7, w, 14);
+    ctx.strokeStyle = up ? 'rgba(255,77,94,.7)' : 'rgba(0,229,160,.7)'; ctx.lineWidth = 1; ctx.strokeRect(plotR - 4 - w + 0.5, y - 6.5, w - 1, 13);
+    ctx.fillStyle = up ? '#FF8A95' : '#5CF0BE'; ctx.fillText(txt, plotR - 9, y + 0.5);
+    ctx.restore();
+  };
+  if(offAbove.length) badge(offAbove[0], true, offAbove.length - 1, top + 10);
+  if(offBelow.length) badge(offBelow[0], false, offBelow.length - 1, bottom - 10);
 }
 
 function fcDrawLevelLines(ctx, levels, yFor, plotL, plotR){
@@ -3255,14 +3468,16 @@ function fcViewOpts(tf){
     elliott: elliottAvail && !!state.fcElliott,                          // Elliott only on Daily / 4H (subjective, useless for timing)
     lvDay: !!state.fcLvDay, lvSess: !!state.fcLvSess && intraday, lvVa: !!state.fcLvVa,
     sd3: !!state.fcSd3, sessVwap: intraday, rsi7: tf === '1m' || tf === '5m',
+    // merged/scored zones replace the raw lines on intraday frames (scalping); 4H/Daily keep the classic lines
+    zones: !!state.fcZones && intraday,
   };
 }
 
 function fcSyncChips(opt){
   document.querySelectorAll('#fcTools button[data-tool]').forEach(b => {
-    const on = { lvDay: opt.lvDay, lvSess: state.fcLvSess, lvVa: opt.lvVa, zz: opt.zz, bb: opt.bb, sd3: opt.sd3 }[b.dataset.tool];
+    const on = { lvDay: opt.lvDay, lvSess: state.fcLvSess, lvVa: opt.lvVa, zz: opt.zz, bb: opt.bb, sd3: opt.sd3, zones: state.fcZones, zonesWeak: state.fcZonesWeak }[b.dataset.tool];
     b.classList.toggle('active', !!on);
-    b.style.opacity = (b.dataset.tool === 'lvSess' && !opt.intraday) ? '.45' : '';
+    b.style.opacity = ((b.dataset.tool === 'lvSess' || b.dataset.tool === 'zones' || b.dataset.tool === 'zonesWeak') && !opt.intraday) ? '.45' : '';
   });
 }
 
@@ -3300,6 +3515,9 @@ function renderFullChart(all, lv){
     levels = fcBuildLevels(lv, lastT, state.fcSess).filter(l =>
       ((l.group === 'day' || l.group === 'week') && opt.lvDay) || (l.group === 'sess' && opt.lvSess) || (l.group === 'va' && opt.lvVa));
   }
+  // merged + scored zones (levels engine) — intraday only; null → classic raw lines
+  let zonesView = null;
+  if(opt.zones && lv) zonesView = fcZonesForChart(levels, lv, all[all.length - 1].close);
 
   // Elliott count — Daily/4H only; cached per timeframe + newest candle so re-renders skip the ~50ms calibration
   let ew = null;
@@ -3327,9 +3545,16 @@ function renderFullChart(all, lv){
   parts.push(vw ? 'VWAP جلسة ±1/±2' + (opt.sd3 ? '/±3' : '') : 'VWAP');
   const lvParts = []; if(opt.lvDay) lvParts.push('يوم/أسبوع'); if(opt.lvSess) lvParts.push('جلسات'); if(opt.lvVa) lvParts.push('POC/VAH/VAL');
   if(lvParts.length) parts.push('مستويات (' + lvParts.join('، ') + ')');
+  if(zonesView) parts.push('مناطق مدمجة (≥' + zonesView.minScore + ' نقاط)');
   parts.push('Volume Profile');
   if(ewDraw) parts.push('Elliott');
-  $('fcPriceLabel').textContent = 'السعر + ' + parts.join(' + ');
+  // news guard: warn when a calendar event is ≤30 minutes away (gold spikes and stop-hunts around releases)
+  let newsWarn = '';
+  try{
+    const ue = typeof getUpcomingHighImpactEvent === 'function' ? getUpcomingHighImpactEvent() : null;
+    if(ue){ const mins = Math.round((ue.dateObj.getTime() - Date.now()) / 60000); if(mins >= 0 && mins <= 30) newsWarn = '⚠️ خبر بعد ' + mins + ' د: ' + ue.nameAr + ' — تجنّب الدخول · '; }
+  }catch(e){}
+  $('fcPriceLabel').textContent = newsWarn + 'السعر + ' + parts.join(' + ');
 
   // ---------- PRICE PANEL ----------
   {
@@ -3343,17 +3568,28 @@ function renderFullChart(all, lv){
     const baseRng = (hi - lo) || 1, reachLo = lo - 0.25 * baseRng, reachHi = hi + 0.25 * baseRng;
     const inReach = v => v != null && v >= reachLo && v <= reachHi;
     (vw ? vw.vwap : (vwapOld ? vwapOld.series : [])).forEach(v => { if(inReach(v)){ hi = Math.max(hi, v); lo = Math.min(lo, v); } });
-    levels.forEach(l => { if(inReach(l.price)){ hi = Math.max(hi, l.price); lo = Math.min(lo, l.price); } });
+    if(zonesView) zonesView.draw.forEach(z => { if(z.top >= reachLo && z.bottom <= reachHi){ hi = Math.max(hi, z.top); lo = Math.min(lo, z.bottom); } });
+    else levels.forEach(l => { if(inReach(l.price)){ hi = Math.max(hi, l.price); lo = Math.min(lo, l.price); } });
     const rng0 = (hi - lo) || 1; hi += rng0 * 0.03; lo -= rng0 * 0.03;
     const yFor = v => padT + (hi - v) / (hi - lo) * (h - padT - padB);
     const step = (plotR - plotL) / candles.length;
     const xFor = i => plotL + step * i + step / 2;
 
+    // zones: those inside the final scale are drawn; the nearest off-screen one per side becomes an edge badge
+    let zoneVis = [], zoneOffAbove = [], zoneOffBelow = [];
+    const pxNow = candles[candles.length - 1].close;
+    if(zonesView){
+      zoneVis = zonesView.draw.filter(z => z.top >= lo && z.bottom <= hi);
+      const rest = zonesView.shown.filter(z => !zoneVis.includes(z));
+      zoneOffAbove = rest.filter(z => z.center > pxNow).sort((a, b) => a.center - b.center);
+      zoneOffBelow = rest.filter(z => z.center <= pxNow).sort((a, b) => b.center - a.center);
+    }
+
     // round-number levels (25 / 50) — faint, only the 50s are labelled
     const rstep = (hi - lo) > 600 ? 100 : ((hi - lo) > 250 ? 50 : 25), round = [];
     for(let p = Math.ceil(lo / rstep) * rstep; p <= hi && round.length < 40; p += rstep)
       round.push({ key: 'R' + p, label: '', price: p, group: 'round', color: 'rgba(255,255,255,.10)', dash: [] });
-    const allLevels = round.concat(levels);
+    const allLevels = round.concat(zonesView ? [] : levels);
 
     // grid + price axis
     ctx.font = '10px monospace'; ctx.textBaseline = 'middle';
@@ -3375,6 +3611,7 @@ function renderFullChart(all, lv){
 
     // overlays under the candles, clipped to the plot area
     ctx.save(); ctx.beginPath(); ctx.rect(plotL, padT, plotR - plotL, h - padT - padB); ctx.clip();
+    if(zonesView) fcDrawZoneRects(ctx, zoneVis, pxNow, yFor, plotL, plotR);
     fcDrawLevelLines(ctx, allLevels, yFor, plotL, plotR);
     if(opt.bb){
       ctx.beginPath();
@@ -3430,6 +3667,10 @@ function renderFullChart(all, lv){
 
     if(ewDraw) fcDrawElliott(ctx, ewDraw, xFor, yFor, { plotL, plotR, padT, padB, h });
     fcDrawLevelLabels(ctx, allLevels, yFor, plotR, padT, h - padB);
+    if(zonesView){
+      state.fcZoneHits = fcDrawZoneLabels(ctx, zoneVis, yFor, plotR, padT, h - padB);
+      fcDrawZoneBadges(ctx, zoneOffAbove, zoneOffBelow, pxNow, plotR, padT, h - padB);
+    } else state.fcZoneHits = [];
 
     // last price tag
     const lastC = candles[candles.length - 1], ly = yFor(lastC.close);
@@ -7555,7 +7796,7 @@ function init(){
       state.fcZzUser[tf] = !fcViewOpts(tf).zz;
       localStorage.setItem('nabd_fcZzUser', JSON.stringify(state.fcZzUser));
     } else {
-      const key = { lvDay: 'fcLvDay', lvSess: 'fcLvSess', lvVa: 'fcLvVa', bb: 'fcBB', sd3: 'fcSd3' }[t];
+      const key = { lvDay: 'fcLvDay', lvSess: 'fcLvSess', lvVa: 'fcLvVa', bb: 'fcBB', sd3: 'fcSd3', zones: 'fcZones', zonesWeak: 'fcZonesWeak' }[t];
       state[key] = !state[key];
       localStorage.setItem('nabd_' + key, String(state[key]));
     }
@@ -7571,6 +7812,12 @@ function init(){
   window.addEventListener('resize', () => {
     const c = state.fcCache[state.fcTimeframe];
     if(!$('fullChartPage').classList.contains('hidden') && c) fcRerender();
+  });
+  // tap a zone label/band on the price chart → list the levels that formed it
+  $('fcPriceCanvas').addEventListener('click', e => {
+    const r = e.currentTarget.getBoundingClientRect(), y = e.clientY - r.top;
+    const hit = (state.fcZoneHits || []).find(z => y >= z.y1 - 4 && y <= z.y2 + 4);
+    if(hit) showToast(hit.text, 7000);
   });
   $('aiChatBtn').addEventListener('click', openAiChat);
   $('closeAiChat').addEventListener('click', closeAiChat);
