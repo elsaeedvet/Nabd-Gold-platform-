@@ -591,6 +591,8 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 .fc-tf-tabs button.active{ background:var(--gold); color:#0A0D14; border-color:var(--gold); }
 .fc-chip{ padding:6px 10px; border-radius:999px; border:1px solid var(--border); background:var(--surface); color:var(--text-dim); font-size:11px; font-weight:700; font-family:inherit; cursor:pointer; }
 .fc-chip.active{ border-color:#B6F500; color:#B6F500; }
+.fc-tools{ display:flex; gap:6px; padding:6px 10px; border-bottom:1px solid var(--border); flex-shrink:0; overflow-x:auto; }
+.fc-tools .fc-chip{ flex:0 0 auto; white-space:nowrap; }
 .fc-elliott-info{ font-size:11px; line-height:1.8; color:#C9D1D9; background:var(--surface); border:1px solid var(--border); border-inline-start:3px solid #B6F500; border-radius:8px; padding:8px 10px; margin:6px 0 2px; }
 .macro-regime-box{
   display:flex; flex-direction:column; gap:3px; padding:10px 12px; border-radius:10px;
@@ -941,9 +943,18 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
         <button type="button" data-tf="30m">30 د</button>
         <button type="button" data-tf="15m">15 د</button>
         <button type="button" data-tf="5m">5 د</button>
+        <button type="button" data-tf="1m">1 د</button>
+      </div>
+      <div id="fcTools" class="fc-tools">
+        <button type="button" class="fc-chip" data-tool="lvDay">يوم/أسبوع</button>
+        <button type="button" class="fc-chip" data-tool="lvSess">الجلسات</button>
+        <button type="button" class="fc-chip" data-tool="lvVa">POC/VA</button>
+        <button type="button" class="fc-chip" data-tool="zz">ZigZag+Fib</button>
+        <button type="button" class="fc-chip" data-tool="bb">Bollinger</button>
+        <button type="button" class="fc-chip" data-tool="sd3">VWAP ±3σ</button>
       </div>
       <div class="full-chart-body">
-        <div class="full-chart-panel-label">السعر + EMA 50/200 + Bollinger + ZigZag(12,5,2) + Fibonacci (0.5, 0.618) + VWAP + Volume Profile + Elliott</div>
+        <div id="fcPriceLabel" class="full-chart-panel-label">السعر + EMA 50/200 + Bollinger + ZigZag(12,5,2) + Fibonacci (0.5, 0.618) + VWAP + Volume Profile + Elliott</div>
         <div class="full-chart-canvas-wrap price-panel"><canvas id="fcPriceCanvas"></canvas></div>
         <div id="fcElliottInfo" class="fc-elliott-info"></div>
         <div class="full-chart-panel-label">RSI (14) + انحراف (Divergence)</div>
@@ -1348,6 +1359,22 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
     </div>
 
     <div class="setting-group">
+      <label class="setting-label">🕐 جلسات الشارت (للمستويات وVWAP)</label>
+      <p class="setting-hint">آسيا بتوقيت UTC، ولندن ونيويورك بالتوقيت المحلي لكل سوق (التوقيت الصيفي بيتضبط تلقائيًا). اكتب ساعة البداية والنهاية من 0 لـ24.</p>
+      <div style="display:grid; grid-template-columns:auto 1fr 1fr; gap:8px 10px; align-items:center;">
+        <span>آسيا (UTC)</span>
+        <input type="number" id="sessAsiaS" class="text-input" min="0" max="24" placeholder="من">
+        <input type="number" id="sessAsiaE" class="text-input" min="0" max="24" placeholder="إلى">
+        <span>لندن (محلي)</span>
+        <input type="number" id="sessLondonS" class="text-input" min="0" max="24" placeholder="من">
+        <input type="number" id="sessLondonE" class="text-input" min="0" max="24" placeholder="إلى">
+        <span>نيويورك (محلي)</span>
+        <input type="number" id="sessNyS" class="text-input" min="0" max="24" placeholder="من">
+        <input type="number" id="sessNyE" class="text-input" min="0" max="24" placeholder="إلى">
+      </div>
+    </div>
+
+    <div class="setting-group">
       <label class="setting-label">⚡ وضع السكالبينج</label>
       <p class="setting-hint">يحوّل التحليل لفريم 5 دقائق بدل الساعة، يسرّع التحديث، ويقصّر صلاحية التوصية لساعتين بدل 48 ساعة. ⚠️ السكالبينج بطبيعته أصعب وأعلى مخاطرة (تكلفة السبريد بتاكل جزء أكبر من الحركة الصغيرة، ومحتاج تنفيذ سريع ومتابعة لصيقة). مع TwelveData المجاني هتضرب حد الطلبات بسرعة — Binance/PAXG المجاني هو الخيار العملي هنا.</p>
       <label class="radio-row" style="cursor:pointer;">
@@ -1417,7 +1444,7 @@ h1,h2,h3{ font-family: var(--font-display); margin:0; }
 
 /* ===================== State ===================== */
 
-const APP_BUILD = '2026-08-17-13'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
+const APP_BUILD = '2026-08-17-14'; // bump this string whenever meaningful logic changes ship, to make version mismatches obvious
 
 const state = {
   asset: 'gold',
@@ -1435,6 +1462,18 @@ const state = {
   fcCache: {},
   fcElliott: localStorage.getItem('nabd_fcElliott') !== 'false',
   fcEwCache: null,
+  fcZzUser: (() => { try{ return JSON.parse(localStorage.getItem('nabd_fcZzUser') || '{}') || {}; }catch(e){ return {}; } })(),
+  fcBB: localStorage.getItem('nabd_fcBB') === 'true',
+  fcLvDay: localStorage.getItem('nabd_fcLvDay') !== 'false',
+  fcLvSess: localStorage.getItem('nabd_fcLvSess') !== 'false',
+  fcLvVa: localStorage.getItem('nabd_fcLvVa') !== 'false',
+  fcSd3: localStorage.getItem('nabd_fcSd3') === 'true',
+  fcLevelsCache: null,
+  fcSess: (() => {
+    const base = { asia: { tz: 'UTC', s: 0, e: 8 }, london: { tz: 'Europe/London', s: 8, e: 16 }, ny: { tz: 'America/New_York', s: 8, e: 16 } };
+    try{ const s = JSON.parse(localStorage.getItem('nabd_fcSess') || 'null'); if(s) ['asia', 'london', 'ny'].forEach(k => { if(s[k]){ base[k].s = Number(s[k].s); base[k].e = Number(s[k].e); } }); }catch(e){}
+    return base;
+  })(),
   apiKey: localStorage.getItem('nabd_twelveDataKey') || '',
   aiKey: localStorage.getItem('nabd_aiKey') || '',
   aiProvider: localStorage.getItem('nabd_aiProvider') || 'anthropic',
@@ -2983,6 +3022,190 @@ function fcDrawElliott(ctx, ew, xFor, yFor, g){
   ctx.restore();
 }
 
+// ================= Scalping levels: sessions, previous day/week, value area, session-anchored VWAP =================
+// Everything here is computed from fixed historical bars (no repainting): once a session/day is
+// over its high/low/POC never move. Times are UTC internally; London and New York session hours are
+// entered in each market's LOCAL time and converted with the IANA zone, so daylight saving
+// shifts the UTC window automatically (NY 08:00-16:00 = 13:00-21:00 UTC in winter, 12:00-20:00 in summer).
+function fcT(c){
+  let t = c.time;
+  if(typeof t !== 'number'){
+    const s = String(t);
+    if(/^\d{4}-\d{2}-\d{2}$/.test(s)) t = Date.parse(s + 'T00:00:00Z');
+    else t = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(s) ? s.replace(' ', 'T') : s.replace(' ', 'T') + 'Z');
+  }
+  if(t < 1e12) t *= 1000;
+  return t;
+}
+
+function fcTzOffsetMin(tz, utcMs){
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(new Date(utcMs));
+  const g = k => Number(parts.find(p => p.type === k).value);
+  return Math.round((Date.UTC(g('year'), g('month') - 1, g('day'), g('hour'), g('minute'), g('second')) - utcMs) / 60000);
+}
+// UTC timestamp of local clock hour `hour` in zone `tz` on the civil date that matches UTC day `dayStartUtc`
+function fcLocalHourToUtc(tz, dayStartUtc, hour){
+  if(tz === 'UTC') return dayStartUtc + hour * 3600000;
+  let off = fcTzOffsetMin(tz, dayStartUtc + 12 * 3600000);
+  let t = dayStartUtc + hour * 3600000 - off * 60000;
+  const off2 = fcTzOffsetMin(tz, t);
+  if(off2 !== off) t = dayStartUtc + hour * 3600000 - off2 * 60000;
+  return t;
+}
+
+// Latest session instance that has already started (today's, otherwise yesterday's)
+function fcSessionRange(m5, cfg, nowMs){
+  const dayMs = 86400000, today = Math.floor(nowMs / dayMs) * dayMs;
+  for(const d of [today, today - dayMs]){
+    const s = fcLocalHourToUtc(cfg.tz, d, cfg.s), e = fcLocalHourToUtc(cfg.tz, d, cfg.e);
+    if(s > nowMs || e <= s) continue;
+    const end = Math.min(e, nowMs + 1);
+    const cs = m5.filter(c => { const t = fcT(c); return t >= s && t < end; });
+    if(!cs.length) continue;
+    return { start: s, end: e, active: nowMs < e, high: Math.max(...cs.map(c => c.high)), low: Math.min(...cs.map(c => c.low)), candles: cs };
+  }
+  return null;
+}
+
+// POC / value area (70%) from a volume histogram. Falls back to time-at-price when the feed has no volume.
+function fcValueArea(candles, bins = 60){
+  if(!candles || !candles.length) return null;
+  const hi = Math.max(...candles.map(c => c.high)), lo = Math.min(...candles.map(c => c.low));
+  const range = hi - lo;
+  if(range <= 0) return null;
+  const bs = range / bins, vol = Array(bins).fill(0), hasVol = candles.some(c => c.volume > 0);
+  const binOf = p => Math.max(0, Math.min(bins - 1, Math.floor((p - lo) / bs)));
+  candles.forEach(c => {
+    const v = hasVol ? (c.volume || 0) : 1, span = c.high - c.low;
+    if(span <= 0){ vol[binOf(c.close)] += v; return; }
+    for(let k = binOf(c.low); k <= binOf(c.high); k++){
+      const bl = lo + k * bs, ov = Math.min(c.high, bl + bs) - Math.max(c.low, bl);
+      if(ov > 0) vol[k] += v * (ov / span);
+    }
+  });
+  const total = vol.reduce((a, b) => a + b, 0);
+  if(total <= 0) return null;
+  const poc = vol.indexOf(Math.max(...vol));
+  let l = poc, u = poc, acc = vol[poc];
+  while(acc < 0.7 * total && (l > 0 || u < bins - 1)){
+    const dn = l > 0 ? vol[l - 1] : -1, up = u < bins - 1 ? vol[u + 1] : -1;
+    if(up >= dn){ u++; acc += vol[u]; } else { l--; acc += vol[l]; }
+  }
+  return { poc: lo + (poc + 0.5) * bs, vah: lo + (u + 1) * bs, val: lo + l * bs, approx: !hasVol };
+}
+
+// All named horizontal levels. lv = { m5: 5-minute candles (~3.5 days), w1: weekly candles }.
+function fcBuildLevels(lv, nowMs, cfg){
+  const L = [], dayMs = 86400000, today = Math.floor(nowMs / dayMs) * dayMs;
+  const m5 = (lv && lv.m5) || [], w1 = (lv && lv.w1) || [];
+  const add = (key, price, group, color, dash) => { if(price != null && isFinite(price)) L.push({ key, label: key, price, group, color, dash }); };
+  // previous TRADING day: the latest earlier UTC day with a meaningful number of bars (skips weekends)
+  let pdC = null;
+  for(let k = 1; k <= 5 && !pdC; k++){
+    const s = today - k * dayMs, cs = m5.filter(c => { const t = fcT(c); return t >= s && t < s + dayMs; });
+    if(cs.length >= 50) pdC = cs;
+  }
+  if(pdC){
+    add('PDH', Math.max(...pdC.map(c => c.high)), 'day', '#F2CC60', [6, 3]);
+    add('PDL', Math.min(...pdC.map(c => c.low)), 'day', '#F2CC60', [6, 3]);
+    add('PDC', pdC[pdC.length - 1].close, 'day', '#F2CC60', [2, 3]);
+  }
+  const todays = m5.filter(c => fcT(c) >= today);
+  if(todays.length) add('DO', todays[0].open, 'day', '#4DD0E1', []);
+  // previous week
+  const weekStart = today - ((new Date(today).getUTCDay() + 6) % 7) * dayMs;
+  let pw = null;
+  w1.forEach(c => { const t = fcT(c); if(t < weekStart && t >= weekStart - 8 * dayMs) pw = c; });
+  if(pw){ add('PWH', pw.high, 'week', '#BA68C8', [8, 4]); add('PWL', pw.low, 'week', '#BA68C8', [8, 4]); }
+  // sessions
+  const SN = { asia: ['Asia', '#80CBC4'], london: ['Lon', '#FFB74D'], ny: ['NY', '#EF9A9A'] };
+  const ranges = [];
+  ['asia', 'london', 'ny'].forEach(k => {
+    const r = fcSessionRange(m5, cfg[k], nowMs);
+    if(!r) return;
+    ranges.push(r);
+    add(SN[k][0] + ' H', r.high, 'sess', SN[k][1], [3, 3]);
+    add(SN[k][0] + ' L', r.low, 'sess', SN[k][1], [3, 3]);
+  });
+  // value area: current (or last finished) session, and previous day
+  const cur = ranges.filter(r => r.active).sort((a, b) => b.start - a.start)[0] || ranges.sort((a, b) => b.end - a.end)[0];
+  const va = (cands, suffix, cPoc, cVa) => {
+    const v = fcValueArea(cands, 50); if(!v) return;
+    const ap = v.approx ? '≈' : '';
+    add('POC·' + suffix + ap, v.poc, 'va', cPoc, []);
+    add('VAH·' + suffix + ap, v.vah, 'va', cVa, [2, 3]);
+    add('VAL·' + suffix + ap, v.val, 'va', cVa, [2, 3]);
+  };
+  if(cur) va(cur.candles, 'S', '#FFFFFF', '#CFD8DC');
+  if(pdC) va(pdC, 'PD', '#90A4AE', '#78909C');
+  return L;
+}
+
+// VWAP anchored at the start of every session (Asia / London / NY), with volume-weighted standard-deviation bands.
+function fcAnchoredVwap(all, offset, cfg){
+  const hasVol = all.some(c => c.volume > 0), dayMs = 86400000;
+  const t0 = fcT(all[0]), t1 = fcT(all[all.length - 1]);
+  const anchors = [];
+  for(let d = Math.floor(t0 / dayMs) * dayMs - dayMs; d <= Math.floor(t1 / dayMs) * dayMs; d += dayMs)
+    ['asia', 'london', 'ny'].forEach(k => anchors.push(fcLocalHourToUtc(cfg[k].tz, d, cfg[k].s)));
+  anchors.sort((a, b) => a - b);
+  const out = { vwap: [], sd: [], seg: [] };
+  // Weighted Welford update (numerically stable): the naive E[x^2]-E[x]^2 form subtracts two huge numbers (price^2 ~ 2e7)
+  let ai = -1, W = 0, mean = 0, S = 0;
+  for(let i = 0; i < all.length; i++){
+    const t = fcT(all[i]);
+    let na = ai; while(na + 1 < anchors.length && anchors[na + 1] <= t) na++;
+    if(na !== ai){ ai = na; W = 0; mean = 0; S = 0; }
+    if(ai < 0){ out.vwap.push(null); out.sd.push(null); out.seg.push(-1); continue; }
+    const v = hasVol ? (all[i].volume || 0) : 1, tp = (all[i].high + all[i].low + all[i].close) / 3;
+    if(v > 0){ const Wn = W + v, delta = tp - mean; mean += (v / Wn) * delta; S += v * delta * (tp - mean); W = Wn; }
+    out.vwap.push(W > 0 ? mean : tp); out.sd.push(W > 0 ? Math.sqrt(Math.max(0, S / W)) : 0); out.seg.push(ai);
+  }
+  return { vwap: out.vwap.slice(offset), sd: out.sd.slice(offset), seg: out.seg.slice(offset), approx: !hasVol };
+}
+
+function fcDrawLevelLines(ctx, levels, yFor, plotL, plotR){
+  levels.forEach(l => {
+    const y = yFor(l.price);
+    ctx.save();
+    ctx.strokeStyle = l.color; ctx.lineWidth = l.group === 'round' ? 1 : (l.key.startsWith('POC·S') ? 1.8 : 1.2); ctx.setLineDash(l.dash || []);
+    ctx.beginPath(); ctx.moveTo(plotL, y); ctx.lineTo(plotR, y); ctx.stroke();
+    ctx.restore();
+  });
+}
+// Labels sit at the right end of the plot on a dark pill, nudged apart so close levels never overprint each other.
+function fcDrawLevelLabels(ctx, levels, yFor, plotR, top, bottom){
+  const items = levels.map(l => ({ l, y: yFor(l.price) })).filter(i => i.y > top && i.y < bottom && (i.l.group !== 'round' || i.l.price % 50 === 0)).sort((a, b) => a.y - b.y);
+  ctx.save();
+  ctx.font = '600 9.5px monospace'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  let lastY = -99;
+  items.forEach(it => {
+    let y = it.y; if(y - lastY < 11) y = lastY + 11; lastY = y;
+    const txt = it.l.group === 'round' ? it.l.price.toFixed(0) : it.l.label + ' ' + it.l.price.toFixed(1);
+    const w = ctx.measureText(txt).width + 8;
+    ctx.fillStyle = 'rgba(13,17,23,.88)'; ctx.fillRect(plotR - 4 - w, y - 6, w, 12);
+    ctx.fillStyle = it.l.group === 'round' ? '#9AA4AF' : it.l.color; ctx.fillText(txt, plotR - 8, y + 0.5);
+  });
+  ctx.restore();
+}
+function fcDrawAnchoredVwap(ctx, vw, xFor, yFor, sd3){
+  const n = vw.vwap.length;
+  const bands = [[0, '#FF5CAA', 1.9, []], [1, 'rgba(255,92,170,.65)', 1, [5, 3]], [-1, 'rgba(255,92,170,.65)', 1, [5, 3]], [2, 'rgba(255,92,170,.45)', 1, [2, 3]], [-2, 'rgba(255,92,170,.45)', 1, [2, 3]]];
+  if(sd3) bands.push([3, 'rgba(255,92,170,.3)', 1, [1, 3]], [-3, 'rgba(255,92,170,.3)', 1, [1, 3]]);
+  let i = 0;
+  while(i < n){
+    if(vw.seg[i] < 0 || vw.vwap[i] == null){ i++; continue; }
+    let j = i; while(j + 1 < n && vw.seg[j + 1] === vw.seg[i]) j++;
+    bands.forEach(([k, col, wd, dash]) => {
+      ctx.beginPath(); ctx.strokeStyle = col; ctx.lineWidth = wd; ctx.setLineDash(dash);
+      for(let q = i; q <= j; q++){ const x = xFor(q), y = yFor(vw.vwap[q] + k * vw.sd[q]); if(q === i) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
+      ctx.stroke();
+    });
+    ctx.setLineDash([]);
+    i = j + 1;
+  }
+}
+
 function fcSetupCanvas(id){
   const canvas = $(id);
   const dpr = window.devicePixelRatio || 1;
@@ -3019,62 +3242,118 @@ function fcLegend(ctx, items, maxW){
   });
 }
 
-function renderFullChart(all){
-  if(!all || all.length < 60){ showToast('مفيش بيانات شموع كافية لعرض الشارت لسه.'); return; }
-  const N = 90;
-  const candles = all.slice(-N);
-  const closes = all.map(c => c.close);
-  const offset = all.length - candles.length;
-  const slice = arr => arr.slice(offset);
+function fcViewOpts(tf){
+  const intraday = ['1m', '5m', '15m', '30m', '1h'].includes(tf);
+  const zzUser = state.fcZzUser && state.fcZzUser[tf];
+  const elliottAvail = tf === '1d' || tf === '4h';
+  return {
+    intraday, elliottAvail,
+    // scalping spec: ZigZag + its Fibonacci repaint, so they are hidden by default on 1m/5m/15m (the user can still turn them on per timeframe)
+    zz: typeof zzUser === 'boolean' ? zzUser : !['1m', '5m', '15m'].includes(tf),
+    bb: !!state.fcBB,                                                    // Bollinger is optional (ATR already covers volatility)
+    ema200: ['15m', '30m', '1h', '4h', '1d'].includes(tf),               // EMA200 adds little below 15m
+    elliott: elliottAvail && !!state.fcElliott,                          // Elliott only on Daily / 4H (subjective, useless for timing)
+    lvDay: !!state.fcLvDay, lvSess: !!state.fcLvSess && intraday, lvVa: !!state.fcLvVa,
+    sd3: !!state.fcSd3, sessVwap: intraday, rsi7: tf === '1m' || tf === '5m',
+  };
+}
 
+function fcSyncChips(opt){
+  document.querySelectorAll('#fcTools button[data-tool]').forEach(b => {
+    const on = { lvDay: opt.lvDay, lvSess: state.fcLvSess, lvVa: opt.lvVa, zz: opt.zz, bb: opt.bb, sd3: opt.sd3 }[b.dataset.tool];
+    b.classList.toggle('active', !!on);
+    b.style.opacity = (b.dataset.tool === 'lvSess' && !opt.intraday) ? '.45' : '';
+  });
+}
+
+function renderFullChart(all, lv){
+  if(!all || all.length < 60){ showToast('مفيش بيانات شموع كافية لعرض الشارت لسه.'); return; }
+  const tf = state.fcTimeframe, opt = fcViewOpts(tf);
+  const N = 90, candles = all.slice(-N), offset = all.length - candles.length;
+  const slice = arr => arr.slice(offset);
+  const closes = all.map(c => c.close);
   const ema50 = slice(computeEMA(closes, 50));
-  const ema200 = slice(computeEMA(closes, 200));
+  const ema200 = opt.ema200 ? slice(computeEMA(closes, 200)) : null;
   const rsiSeries = slice(computeRSISeries(closes, 14));
+  const rsi7 = opt.rsi7 ? slice(computeRSISeries(closes, 7)) : null;
   const atrAll = computeATRSeries(all, 14);
   const atrSeries = Array(all.length - atrAll.length).fill(null).concat(atrAll).slice(offset);
 
-  // Bollinger (20, 2)
-  const bbMid = [], bbUp = [], bbLo = [];
-  for(let i = 0; i < all.length; i++){
-    if(i < 19){ bbMid.push(null); bbUp.push(null); bbLo.push(null); continue; }
-    const w = closes.slice(i - 19, i + 1);
-    const m = w.reduce((a, b) => a + b, 0) / 20;
-    const sd = Math.sqrt(w.reduce((a, b) => a + (b - m) ** 2, 0) / 20);
-    bbMid.push(m); bbUp.push(m + 2 * sd); bbLo.push(m - 2 * sd);
+  let bMid = [], bUp = [], bLo = [];
+  if(opt.bb){
+    const mid = [], up = [], lo = [];
+    for(let i = 0; i < all.length; i++){
+      if(i < 19){ mid.push(null); up.push(null); lo.push(null); continue; }
+      const wn = closes.slice(i - 19, i + 1), m = wn.reduce((a, b) => a + b, 0) / 20;
+      const sd = Math.sqrt(wn.reduce((a, b) => a + (b - m) ** 2, 0) / 20);
+      mid.push(m); up.push(m + 2 * sd); lo.push(m - 2 * sd);
+    }
+    bMid = slice(mid); bUp = slice(up); bLo = slice(lo);
   }
-  const bMid = slice(bbMid), bUp = slice(bbUp), bLo = slice(bbLo);
-  const vwapInfo = fcVwapSeries(all, state.fcTimeframe, offset);
-  // Elliott count (cached per timeframe + latest candle, so resizes/re-renders don't redo the ~50ms calibration)
+  const vw = opt.sessVwap ? fcAnchoredVwap(all, offset, state.fcSess) : null;
+  const vwapOld = opt.sessVwap ? null : fcVwapSeries(all, tf, offset);
+
+  // named levels (day / week / sessions / value area), evaluated at the time of the newest candle
+  const lastT = fcT(all[all.length - 1]);
+  let levels = [];
+  if(lv){
+    levels = fcBuildLevels(lv, lastT, state.fcSess).filter(l =>
+      ((l.group === 'day' || l.group === 'week') && opt.lvDay) || (l.group === 'sess' && opt.lvSess) || (l.group === 'va' && opt.lvVa));
+  }
+
+  // Elliott count — Daily/4H only; cached per timeframe + newest candle so re-renders skip the ~50ms calibration
   let ew = null;
-  if(state.fcElliott){
+  if(opt.elliott){
     const last = all[all.length - 1];
-    const ewKey = state.fcTimeframe + ':' + all.length + ':' + last.time + ':' + last.close;
+    const ewKey = tf + ':' + all.length + ':' + last.time + ':' + last.close;
     if(state.fcEwCache && state.fcEwCache.key === ewKey) ew = state.fcEwCache.res;
     else { ew = fcElliottAnalyze(all, offset, atrAll[atrAll.length - 1] || 0); state.fcEwCache = { key: ewKey, res: ew }; }
   }
   const ewInfoEl = $('fcElliottInfo');
-  if(!state.fcElliott) ewInfoEl.style.display = 'none';
+  $('fcElliottToggle').style.display = opt.elliottAvail ? '' : 'none';
+  if(!opt.elliottAvail || !state.fcElliott) ewInfoEl.style.display = 'none';
   else {
     ewInfoEl.style.display = '';
     ewInfoEl.textContent = ew ? ew.info : '🌊 إليوت: مفيش عدّ يستوفي قواعد إليوت بجودة كافية حاليًا على الفريم ده — ده طبيعي، ومتجبرش العدّ. جرّب فريم تاني.';
   }
   const ewDraw = ew && ew.strength !== 'noise' ? ew : null;
+  fcSyncChips(opt);
 
-  $('fullChartPrice').textContent = formatPrice(candles[candles.length - 1].close) + ' · ' + FC_TIMEFRAMES[state.fcTimeframe].label;
+  $('fullChartPrice').textContent = formatPrice(candles[candles.length - 1].close) + ' · ' + FC_TIMEFRAMES[tf].label;
+  const parts = ['EMA50'];
+  if(opt.ema200) parts.push('EMA200');
+  if(opt.bb) parts.push('Bollinger');
+  if(opt.zz) parts.push('ZigZag(12,5,2)', 'Fibonacci (0.5, 0.618)');
+  parts.push(vw ? 'VWAP جلسة ±1/±2' + (opt.sd3 ? '/±3' : '') : 'VWAP');
+  const lvParts = []; if(opt.lvDay) lvParts.push('يوم/أسبوع'); if(opt.lvSess) lvParts.push('جلسات'); if(opt.lvVa) lvParts.push('POC/VAH/VAL');
+  if(lvParts.length) parts.push('مستويات (' + lvParts.join('، ') + ')');
+  parts.push('Volume Profile');
+  if(ewDraw) parts.push('Elliott');
+  $('fcPriceLabel').textContent = 'السعر + ' + parts.join(' + ');
 
   // ---------- PRICE PANEL ----------
   {
     const { ctx, w, h } = fcSetupCanvas('fcPriceCanvas');
-    const padL = 6, padR = 58, padT = 36, padB = 18;
-    const vpW = 50; // volume profile strip width (left side)
+    const padL = 6, padR = 58, padT = 36, padB = 18, vpW = 50;
     const plotL = padL + vpW, plotR = w - padR;
     const lows = candles.map(c => c.low), highs = candles.map(c => c.high);
     let hi = Math.max(...highs), lo = Math.min(...lows);
-    [bUp, bLo, vwapInfo.series].forEach(a => a.forEach(v => { if(v != null){ hi = Math.max(hi, v); lo = Math.min(lo, v); } }));
-    const rng = (hi - lo) || 1; hi += rng * 0.03; lo -= rng * 0.03;
+    if(opt.bb) [bUp, bLo].forEach(a => a.forEach(v => { if(v != null){ hi = Math.max(hi, v); lo = Math.min(lo, v); } }));
+    // levels / VWAP only stretch the scale when they are close to the candles (within 25% of the visible range)
+    const baseRng = (hi - lo) || 1, reachLo = lo - 0.25 * baseRng, reachHi = hi + 0.25 * baseRng;
+    const inReach = v => v != null && v >= reachLo && v <= reachHi;
+    (vw ? vw.vwap : (vwapOld ? vwapOld.series : [])).forEach(v => { if(inReach(v)){ hi = Math.max(hi, v); lo = Math.min(lo, v); } });
+    levels.forEach(l => { if(inReach(l.price)){ hi = Math.max(hi, l.price); lo = Math.min(lo, l.price); } });
+    const rng0 = (hi - lo) || 1; hi += rng0 * 0.03; lo -= rng0 * 0.03;
     const yFor = v => padT + (hi - v) / (hi - lo) * (h - padT - padB);
     const step = (plotR - plotL) / candles.length;
     const xFor = i => plotL + step * i + step / 2;
+
+    // round-number levels (25 / 50) — faint, only the 50s are labelled
+    const rstep = (hi - lo) > 600 ? 100 : ((hi - lo) > 250 ? 50 : 25), round = [];
+    for(let p = Math.ceil(lo / rstep) * rstep; p <= hi && round.length < 40; p += rstep)
+      round.push({ key: 'R' + p, label: '', price: p, group: 'round', color: 'rgba(255,255,255,.10)', dash: [] });
+    const allLevels = round.concat(levels);
 
     // grid + price axis
     ctx.font = '10px monospace'; ctx.textBaseline = 'middle';
@@ -3085,9 +3364,8 @@ function renderFullChart(all){
       ctx.fillStyle = '#8B949E'; ctx.textAlign = 'left'; ctx.fillText(v.toFixed(1), plotR + 4, y);
     }
 
-    // volume profile (left strip)
-    const vp = fcVolumeProfile(candles, 24);
-    vp.forEach(b => {
+    // volume profile strip (left)
+    fcVolumeProfile(candles, 24).forEach(b => {
       const y1 = yFor(b.top), y2 = yFor(b.bottom);
       ctx.fillStyle = 'rgba(88,166,255,.35)';
       ctx.fillRect(padL, y1 + 0.5, vpW * b.pct, Math.max(1, y2 - y1 - 1));
@@ -3095,28 +3373,34 @@ function renderFullChart(all){
     ctx.fillStyle = '#58A6FF'; ctx.font = '600 9px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
     ctx.fillText('VP', padL + 2, padT - 12);
 
-    // Bollinger fill + lines
-    ctx.beginPath();
-    let first = true;
-    bUp.forEach((v, i) => { if(v == null) return; const x = xFor(i), y = yFor(v); if(first){ ctx.moveTo(x, y); first = false; } else ctx.lineTo(x, y); });
-    for(let i = bLo.length - 1; i >= 0; i--){ if(bLo[i] == null) continue; ctx.lineTo(xFor(i), yFor(bLo[i])); }
-    ctx.closePath(); ctx.fillStyle = 'rgba(163,113,247,.08)'; ctx.fill();
-    fcLine(ctx, bUp, xFor, yFor, 'rgba(163,113,247,.8)', 1);
-    fcLine(ctx, bLo, xFor, yFor, 'rgba(163,113,247,.8)', 1);
-    fcLine(ctx, bMid, xFor, yFor, 'rgba(163,113,247,.5)', 1, [3, 3]);
+    // overlays under the candles, clipped to the plot area
+    ctx.save(); ctx.beginPath(); ctx.rect(plotL, padT, plotR - plotL, h - padT - padB); ctx.clip();
+    fcDrawLevelLines(ctx, allLevels, yFor, plotL, plotR);
+    if(opt.bb){
+      ctx.beginPath();
+      let first = true;
+      bUp.forEach((v, i) => { if(v == null) return; const x = xFor(i), y = yFor(v); if(first){ ctx.moveTo(x, y); first = false; } else ctx.lineTo(x, y); });
+      for(let i = bLo.length - 1; i >= 0; i--){ if(bLo[i] == null) continue; ctx.lineTo(xFor(i), yFor(bLo[i])); }
+      ctx.closePath(); ctx.fillStyle = 'rgba(163,113,247,.08)'; ctx.fill();
+      fcLine(ctx, bUp, xFor, yFor, 'rgba(163,113,247,.8)', 1);
+      fcLine(ctx, bLo, xFor, yFor, 'rgba(163,113,247,.8)', 1);
+      fcLine(ctx, bMid, xFor, yFor, 'rgba(163,113,247,.5)', 1, [3, 3]);
+    }
+    ctx.restore();
 
-    // Fibonacci 0.5 / 0.618 on the dominant swing of the window
-    const hiIdx = highs.indexOf(Math.max(...highs)), loIdx = lows.indexOf(Math.min(...lows));
-    const swingHi = highs[hiIdx], swingLo = lows[loIdx];
-    const up = loIdx < hiIdx; // up-leg if low came first
-    [0.5, 0.618].forEach(r => {
-      const price = up ? swingHi - (swingHi - swingLo) * r : swingLo + (swingHi - swingLo) * r;
-      const y = yFor(price);
-      ctx.strokeStyle = r === 0.5 ? '#F0B90B' : '#FF9F43'; ctx.lineWidth = 1; ctx.setLineDash([6, 4]);
-      ctx.beginPath(); ctx.moveTo(plotL, y); ctx.lineTo(plotR, y); ctx.stroke(); ctx.setLineDash([]);
-      ctx.fillStyle = r === 0.5 ? '#F0B90B' : '#FF9F43'; ctx.font = '600 10px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
-      ctx.fillText(`Fib ${r} · ${price.toFixed(1)}`, plotL + 4, y - 2);
-    });
+    // Fibonacci 0.5 / 0.618 on the dominant swing (travels with ZigZag)
+    if(opt.zz){
+      const hiIdx = highs.indexOf(Math.max(...highs)), loIdx = lows.indexOf(Math.min(...lows));
+      const swingHi = highs[hiIdx], swingLo = lows[loIdx], up = loIdx < hiIdx;
+      [0.5, 0.618].forEach(r => {
+        const price = up ? swingHi - (swingHi - swingLo) * r : swingLo + (swingHi - swingLo) * r;
+        const y = yFor(price);
+        ctx.strokeStyle = r === 0.5 ? '#F0B90B' : '#FF9F43'; ctx.lineWidth = 1; ctx.setLineDash([6, 4]);
+        ctx.beginPath(); ctx.moveTo(plotL, y); ctx.lineTo(plotR, y); ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle = r === 0.5 ? '#F0B90B' : '#FF9F43'; ctx.font = '600 10px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+        ctx.fillText(`Fib ${r} · ${price.toFixed(1)}`, plotL + 4, y - 2);
+      });
+    }
 
     // candles
     candles.forEach((c, i) => {
@@ -3127,37 +3411,41 @@ function renderFullChart(all){
       ctx.fillRect(x - Math.max(1, step * 0.32), top, Math.max(2, step * 0.64), bh);
     });
 
-    // EMAs
+    // EMAs + VWAP (clipped)
+    ctx.save(); ctx.beginPath(); ctx.rect(plotL, padT, plotR - plotL, h - padT - padB); ctx.clip();
     fcLine(ctx, ema50, xFor, yFor, '#F0B90B', 1.6);
-    fcLine(ctx, ema200, xFor, yFor, '#58A6FF', 1.8);
-    fcLine(ctx, vwapInfo.series, xFor, yFor, '#FF5CAA', 1.8);
+    if(ema200) fcLine(ctx, ema200, xFor, yFor, '#58A6FF', 1.8);
+    if(vw) fcDrawAnchoredVwap(ctx, vw, xFor, yFor, opt.sd3);
+    else fcLine(ctx, vwapOld.series, xFor, yFor, '#FF5CAA', 1.8);
+    ctx.restore();
 
     // ZigZag (12, 5, 2)
-    const zz = fcZigZag(candles, 12, 5, 2);
-    ctx.beginPath(); ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 1.5;
-    zz.forEach((p, i) => { const x = xFor(p.idx), y = yFor(p.price); if(i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
-    ctx.stroke();
-    zz.forEach(p => {
-      ctx.fillStyle = p.type === 'high' ? '#EF5350' : '#26A69A';
-      ctx.beginPath(); ctx.arc(xFor(p.idx), yFor(p.price), 2.5, 0, Math.PI * 2); ctx.fill();
-    });
+    if(opt.zz){
+      const zz = fcZigZag(candles, 12, 5, 2);
+      ctx.beginPath(); ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 1.5;
+      zz.forEach((p, i) => { const x = xFor(p.idx), y = yFor(p.price); if(i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+      ctx.stroke();
+      zz.forEach(p => { ctx.fillStyle = p.type === 'high' ? '#EF5350' : '#26A69A'; ctx.beginPath(); ctx.arc(xFor(p.idx), yFor(p.price), 2.5, 0, Math.PI * 2); ctx.fill(); });
+    }
 
     if(ewDraw) fcDrawElliott(ctx, ewDraw, xFor, yFor, { plotL, plotR, padT, padB, h });
+    fcDrawLevelLabels(ctx, allLevels, yFor, plotR, padT, h - padB);
 
     // last price tag
-    const lastP = candles[candles.length - 1].close, ly = yFor(lastP);
-    ctx.fillStyle = candles[candles.length - 1].close >= candles[candles.length - 1].open ? '#26A69A' : '#EF5350';
+    const lastC = candles[candles.length - 1], ly = yFor(lastC.close);
+    ctx.fillStyle = lastC.close >= lastC.open ? '#26A69A' : '#EF5350';
     ctx.fillRect(plotR, ly - 8, padR - 2, 16);
     ctx.fillStyle = '#fff'; ctx.font = '600 10px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    ctx.fillText(lastP.toFixed(1), plotR + 3, ly);
+    ctx.fillText(lastC.close.toFixed(1), plotR + 3, ly);
 
-    fcLegend(ctx, [
-      { color: '#F0B90B', text: 'EMA50' }, { color: '#58A6FF', text: 'EMA200' },
-      { color: '#A371F7', text: 'BB(20,2)' }, { color: '#FFFFFF', text: 'ZigZag 12/5/2' },
-      { color: '#FF9F43', text: 'Fib .5/.618' },
-      { color: '#FF5CAA', text: 'VWAP' + (state.fcTimeframe === '1d' ? ' تراكمي' : ' يومي') + (vwapInfo.approx ? ' ≈' : '') },
-      ...(ewDraw ? [{ color: '#B6F500', text: 'Elliott' + (ewDraw.strength === 'weak' ? ' (ضعيف)' : '') }] : []),
-    ], w);
+    const legend = [{ color: '#F0B90B', text: 'EMA50' }];
+    if(opt.ema200) legend.push({ color: '#58A6FF', text: 'EMA200' });
+    if(opt.bb) legend.push({ color: '#A371F7', text: 'BB(20,2)' });
+    if(opt.zz) legend.push({ color: '#FFFFFF', text: 'ZigZag 12/5/2' }, { color: '#FF9F43', text: 'Fib .5/.618' });
+    if(vw) legend.push({ color: '#FF5CAA', text: 'VWAP جلسة ±1/±2' + (opt.sd3 ? '/±3' : '') + (vw.approx ? ' ≈' : '') });
+    else legend.push({ color: '#FF5CAA', text: 'VWAP' + (tf === '1d' ? ' تراكمي' : ' يومي') + (vwapOld.approx ? ' ≈' : '') });
+    if(ewDraw) legend.push({ color: '#B6F500', text: 'Elliott' + (ewDraw.strength === 'weak' ? ' (ضعيف)' : '') });
+    fcLegend(ctx, legend, w);
   }
 
   // ---------- RSI PANEL ----------
@@ -3176,12 +3464,12 @@ function renderFullChart(all){
       ctx.fillText(String(l), plotR + 4, yFor(l));
     });
     fcLine(ctx, rsiSeries, xFor, yFor, '#F0B90B', 1.6);
-    // divergence markers
+    if(rsi7) fcLine(ctx, rsi7, xFor, yFor, '#4FC3F7', 1.2);
     const divFrom = candles.length - 50; // Divergence lookback = 50 bars
     const pricePivots = findSwingPivots(candles, 5).filter(p => rsiSeries[p.idx] != null && p.idx >= divFrom);
     const lowsP = pricePivots.filter(p => p.type === 'low'), highsP = pricePivots.filter(p => p.type === 'high');
     for(let i = 1; i < lowsP.length; i++){
-      const a = lowsP[i-1], b = lowsP[i];
+      const a = lowsP[i - 1], b = lowsP[i];
       if(b.price < a.price && rsiSeries[b.idx] > rsiSeries[a.idx]){
         ctx.strokeStyle = '#26A69A'; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.moveTo(xFor(a.idx), yFor(rsiSeries[a.idx])); ctx.lineTo(xFor(b.idx), yFor(rsiSeries[b.idx])); ctx.stroke();
@@ -3189,15 +3477,18 @@ function renderFullChart(all){
       }
     }
     for(let i = 1; i < highsP.length; i++){
-      const a = highsP[i-1], b = highsP[i];
+      const a = highsP[i - 1], b = highsP[i];
       if(b.price > a.price && rsiSeries[b.idx] < rsiSeries[a.idx]){
         ctx.strokeStyle = '#EF5350'; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.moveTo(xFor(a.idx), yFor(rsiSeries[a.idx])); ctx.lineTo(xFor(b.idx), yFor(rsiSeries[b.idx])); ctx.stroke();
         ctx.fillStyle = '#EF5350'; ctx.font = '700 9px sans-serif'; ctx.textBaseline = 'bottom'; ctx.fillText('Bear Div', xFor(b.idx) - 14, yFor(rsiSeries[b.idx]) - 4);
       }
     }
-    const lastRsi = rsiSeries[rsiSeries.length - 1];
-    fcLegend(ctx, [{ color: '#F0B90B', text: `RSI(14) ${lastRsi != null ? lastRsi.toFixed(1) : '—'}` }, { color: '#26A69A', text: 'Div(50)' }]);
+    const last14 = rsiSeries[rsiSeries.length - 1];
+    const lg = [{ color: '#F0B90B', text: `RSI(14) ${last14 != null ? last14.toFixed(1) : '—'}` }];
+    if(rsi7){ const l7 = rsi7[rsi7.length - 1]; lg.push({ color: '#4FC3F7', text: `RSI(7) ${l7 != null ? l7.toFixed(1) : '—'}` }); }
+    lg.push({ color: '#26A69A', text: 'Div(50)' });
+    fcLegend(ctx, lg);
   }
 
   // ---------- ATR PANEL ----------
@@ -3224,14 +3515,61 @@ function renderFullChart(all){
 // the first visible bar; the chart shows the most recent 90. Cached 60s per timeframe so rapid
 // tab-flipping doesn't hammer the data source (matters on the free TwelveData credit budget).
 const FC_TIMEFRAMES = {
-  '1d':  { label: 'يوم',     binance: '1d',  td: '1day'  },
-  '4h':  { label: '4 ساعات', binance: '4h',  td: '4h'    },
-  '1h':  { label: 'ساعة',    binance: '1h',  td: '1h'    },
+  '1d':  { label: 'يوم',      binance: '1d',  td: '1day'  },
+  '4h':  { label: '4 ساعات',  binance: '4h',  td: '4h'    },
+  '1h':  { label: 'ساعة',     binance: '1h',  td: '1h'    },
   '30m': { label: '30 دقيقة', binance: '30m', td: '30min' },
   '15m': { label: '15 دقيقة', binance: '15m', td: '15min' },
-  '5m':  { label: '5 دقائق', binance: '5m',  td: '5min'  },
+  '5m':  { label: '5 دقائق',  binance: '5m',  td: '5min'  },
+  '1m':  { label: 'دقيقة',    binance: '1m',  td: '1min'  },
 };
 const FC_CACHE_MS = 60000;
+const FC_LEVELS_MS = 5 * 60000;
+
+// TwelveData fetch for the chart: asks for UTC explicitly. (The shared fetchTwelveDataSeries parses
+// datetimes as the DEVICE's local time, which would shift session boundaries by the UTC offset.)
+async function fcFetchTwelveData(interval, n){
+  const url = `https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=${interval}&outputsize=${n}&timezone=UTC&apikey=${state.apiKey}`;
+  const res = await fetch(url);
+  const d = await res.json();
+  if(d.status === 'error' || !d.values) throw new Error(d.message || 'مفتاح TwelveData غير صالح');
+  return d.values.slice().reverse().map(v => {
+    const s = String(v.datetime), iso = s.length <= 10 ? s + 'T00:00:00Z' : s.replace(' ', 'T') + 'Z';
+    return { time: Date.parse(iso), open: parseFloat(v.open), high: parseFloat(v.high), low: parseFloat(v.low), close: parseFloat(v.close), volume: 0 };
+  });
+}
+const fcUseTwelve = () => state.goldSource === 'twelvedata' && !!state.apiKey;
+
+async function fcGetCandles(tf){
+  const cached = state.fcCache[tf];
+  if(cached && Date.now() - cached.fetchedAt < FC_CACHE_MS) return cached.candles;
+  const cfg = FC_TIMEFRAMES[tf];
+  const candles = fcUseTwelve() ? await fcFetchTwelveData(cfg.td, 300) : await fetchBinanceKlines(SYMBOLS.goldPaxg, cfg.binance, 300);
+  state.fcCache[tf] = { candles, fetchedAt: Date.now() };
+  return candles;
+}
+
+// 5-minute history (~3.5 days) drives every session / previous-day level; weekly candles give the previous week.
+// Cached 5 minutes. On the free TwelveData plan this costs 2 requests per refresh — Binance/PAXG is free.
+async function fcGetLevelsData(){
+  const c = state.fcLevelsCache;
+  if(c && Date.now() - c.at < FC_LEVELS_MS) return c.data;
+  try{
+    const [m5, w1] = fcUseTwelve()
+      ? await Promise.all([fcFetchTwelveData('5min', 1000), fcFetchTwelveData('1week', 6)])
+      : await Promise.all([fetchBinanceKlines(SYMBOLS.goldPaxg, '5m', 1000), fetchBinanceKlines(SYMBOLS.goldPaxg, '1w', 6)]);
+    state.fcLevelsCache = { at: Date.now(), data: { m5, w1 } };
+    return state.fcLevelsCache.data;
+  }catch(e){
+    showToast('تعذر تحميل مستويات اليوم/الجلسات — ' + (e.message || 'تحقق من الاتصال'));
+    return c ? c.data : null;
+  }
+}
+
+function fcRerender(){
+  const c = state.fcCache[state.fcTimeframe];
+  if(c) renderFullChart(c.candles, state.fcLevelsCache ? state.fcLevelsCache.data : null);
+}
 
 async function loadFullChartTimeframe(tf){
   const cfg = FC_TIMEFRAMES[tf];
@@ -3239,16 +3577,13 @@ async function loadFullChartTimeframe(tf){
   state.fcTimeframe = tf;
   localStorage.setItem('nabd_fcTimeframe', tf);
   document.querySelectorAll('#fcTfTabs button').forEach(b => b.classList.toggle('active', b.dataset.tf === tf));
-  const cached = state.fcCache[tf];
-  if(cached && Date.now() - cached.fetchedAt < FC_CACHE_MS){ renderFullChart(cached.candles); return; }
+  const c0 = state.fcCache[tf], l0 = state.fcLevelsCache;
+  if(c0 && Date.now() - c0.fetchedAt < FC_CACHE_MS && l0 && Date.now() - l0.at < FC_LEVELS_MS){ renderFullChart(c0.candles, l0.data); return; }
   $('fullChartPrice').textContent = '⏳ جارٍ تحميل فريم ' + cfg.label + '…';
   try{
-    const candles = (state.goldSource === 'twelvedata' && state.apiKey)
-      ? await fetchTwelveDataSeries(state.apiKey, cfg.td, 300)
-      : await fetchBinanceKlines(SYMBOLS.goldPaxg, cfg.binance, 300);
-    state.fcCache[tf] = { candles, fetchedAt: Date.now() };
-    // if the user already flipped to a different tab while this was loading, don't paint stale data over it
-    if(state.fcTimeframe === tf) renderFullChart(candles);
+    const [candles, lvData] = await Promise.all([fcGetCandles(tf), fcGetLevelsData()]);
+    // if the user already flipped to another tab while this was loading, don't paint stale data over it
+    if(state.fcTimeframe === tf) renderFullChart(candles, lvData);
   }catch(e){
     $('fullChartPrice').textContent = '—';
     showToast('تعذر تحميل فريم ' + cfg.label + ' — ' + (e.message || 'تحقق من الاتصال'));
@@ -6693,6 +7028,9 @@ function openSettings(){
   $('minConfidenceSlider').value = state.minConfidence;
   $('autoSpeakToggle').checked = state.autoSpeak;
   $('scalpingModeToggle').checked = state.scalpingMode;
+  $('sessAsiaS').value = state.fcSess.asia.s; $('sessAsiaE').value = state.fcSess.asia.e;
+  $('sessLondonS').value = state.fcSess.london.s; $('sessLondonE').value = state.fcSess.london.e;
+  $('sessNyS').value = state.fcSess.ny.s; $('sessNyE').value = state.fcSess.ny.e;
   $('circuitBreakerLossLimitInput').value = state.circuitBreakerLossLimit;
   $('circuitBreakerCooldownInput').value = state.circuitBreakerCooldownHours;
   $('minConfidenceValue').textContent = state.minConfidence + '%';
@@ -6733,6 +7071,14 @@ function saveSettings(){
   localStorage.setItem('nabd_autoSpeak', String(state.autoSpeak));
   state.scalpingMode = $('scalpingModeToggle').checked;
   localStorage.setItem('nabd_scalpingMode', String(state.scalpingMode));
+  {
+    const hh = (id, d) => { const v = parseInt($(id).value, 10); return (isNaN(v) || v < 0 || v > 24) ? d : v; };
+    state.fcSess.asia.s = hh('sessAsiaS', state.fcSess.asia.s); state.fcSess.asia.e = hh('sessAsiaE', state.fcSess.asia.e);
+    state.fcSess.london.s = hh('sessLondonS', state.fcSess.london.s); state.fcSess.london.e = hh('sessLondonE', state.fcSess.london.e);
+    state.fcSess.ny.s = hh('sessNyS', state.fcSess.ny.s); state.fcSess.ny.e = hh('sessNyE', state.fcSess.ny.e);
+    localStorage.setItem('nabd_fcSess', JSON.stringify({ asia: { s: state.fcSess.asia.s, e: state.fcSess.asia.e }, london: { s: state.fcSess.london.s, e: state.fcSess.london.e }, ny: { s: state.fcSess.ny.s, e: state.fcSess.ny.e } }));
+    state.fcLevelsCache = null; state.fcEwCache = null;   // session hours changed → levels must be rebuilt
+  }
   state.circuitBreakerLossLimit = parseInt($('circuitBreakerLossLimitInput').value, 10) || 0;
   localStorage.setItem('nabd_circuitBreakerLossLimit', String(state.circuitBreakerLossLimit));
   state.circuitBreakerCooldownHours = parseFloat($('circuitBreakerCooldownInput').value) || 4;
@@ -7203,17 +7549,28 @@ function init(){
   $('openFullChartBtn').addEventListener('click', openFullChart);
   $('closeFullChartBtn').addEventListener('click', closeFullChart);
   document.querySelectorAll('#fcTfTabs button').forEach(b => b.addEventListener('click', () => loadFullChartTimeframe(b.dataset.tf)));
+  document.querySelectorAll('#fcTools button[data-tool]').forEach(b => b.addEventListener('click', () => {
+    const t = b.dataset.tool, tf = state.fcTimeframe;
+    if(t === 'zz'){
+      state.fcZzUser[tf] = !fcViewOpts(tf).zz;
+      localStorage.setItem('nabd_fcZzUser', JSON.stringify(state.fcZzUser));
+    } else {
+      const key = { lvDay: 'fcLvDay', lvSess: 'fcLvSess', lvVa: 'fcLvVa', bb: 'fcBB', sd3: 'fcSd3' }[t];
+      state[key] = !state[key];
+      localStorage.setItem('nabd_' + key, String(state[key]));
+    }
+    fcRerender();
+  }));
   $('fcElliottToggle').classList.toggle('active', state.fcElliott);
   $('fcElliottToggle').addEventListener('click', () => {
     state.fcElliott = !state.fcElliott;
     localStorage.setItem('nabd_fcElliott', String(state.fcElliott));
     $('fcElliottToggle').classList.toggle('active', state.fcElliott);
-    const c = state.fcCache[state.fcTimeframe];
-    if(c) renderFullChart(c.candles);
+    fcRerender();
   });
   window.addEventListener('resize', () => {
     const c = state.fcCache[state.fcTimeframe];
-    if(!$('fullChartPage').classList.contains('hidden') && c) renderFullChart(c.candles);
+    if(!$('fullChartPage').classList.contains('hidden') && c) fcRerender();
   });
   $('aiChatBtn').addEventListener('click', openAiChat);
   $('closeAiChat').addEventListener('click', closeAiChat);
